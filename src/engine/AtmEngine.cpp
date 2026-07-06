@@ -22,6 +22,8 @@ AtmEngine::AtmEngine(const Config& cfg)
     for (int i = 0; i < cfg.clients.count; ++i) {
         accounts_.emplace_back(static_cast<AccountId>(i), cfg.clients.initialBalance);
     }
+    roster_.reserve(static_cast<std::size_t>(cfg.clients.count));
+    startTime_ = Clock::now();  // отсчёт аптайма
 }
 
 // Сколько МОДЕЛЬНЫХ секунд клиент уже ждёт. Модельное время идёт в time_scale
@@ -89,6 +91,7 @@ void AtmEngine::generateArrivals(std::stop_token stopToken) {
         {
             std::unique_lock<std::shared_mutex> lock(mutex_);
             queue_.push_back(c);
+            roster_.push_back(c);  // реестр всех клиентов (roster_[id-1])
             if (queue_.size() > maxQueueLen_) maxQueueLen_ = queue_.size();
             // Если банкомат простаивал — переводим в рабочий режим.
             if (state_.load() == AtmState::Idle) state_.store(AtmState::Serving);
@@ -105,6 +108,7 @@ void AtmEngine::run(std::stop_token stopToken) {
         Client client;
         bool haveClient = false;
         double serviceModelSec = 0.0;
+        double waitedModel = 0.0;  // сколько клиент прождал (для статистики)
 
         // --- Фаза 1: дождаться работы и взять клиента (под эксклюзивным локом) ---
         {
@@ -125,12 +129,14 @@ void AtmEngine::run(std::stop_token stopToken) {
 
             client = queue_.front();
             queue_.pop_front();
+            waitedModel = modelSecondsWaited(client);
 
             // Уход по терпению (reneging): если клиент, пока стоял, уже перетерпел
             // — не обслуживаем его, считаем ушедшим (§4.1). (M3: проверяем в момент,
             // когда до него дошла очередь; проактивный уход из очереди — позже.)
-            if (modelSecondsWaited(client) > static_cast<double>(client.patience.count())) {
+            if (waitedModel > static_cast<double>(client.patience.count())) {
                 ++totalLeft_;
+                roster_[client.id - 1].state = ClientState::LeftQueue;
                 if (queue_.empty() && state_.load() == AtmState::Serving) {
                     state_.store(AtmState::Idle);
                 }
@@ -138,6 +144,7 @@ void AtmEngine::run(std::stop_token stopToken) {
             }
 
             client.state = ClientState::InService;
+            roster_[client.id - 1].state = ClientState::InService;
             currentClient_ = client;
             state_.store(AtmState::Serving);
             // Длительность обслуживания берём здесь, под локом, из «своего» RNG.
@@ -166,8 +173,27 @@ void AtmEngine::run(std::stop_token stopToken) {
             // «доработать текущую»): мы не ждём остаток задержки, но результат
             // операции применяем, чтобы клиент считался обслуженным честно.
             Account& acct = accounts_[static_cast<std::size_t>(client.accountId)];
-            applyOperation(client.requestedOperation, client.amount, acct, cashbox_);
+            const OperationOutcome outcome =
+                applyOperation(client.requestedOperation, client.amount, acct, cashbox_);
+
+            // Запись в бизнес-журнал (§4.4): кто, что, когда, с каким исходом.
+            OperationRecord rec;
+            rec.id = nextOperationId_++;
+            rec.clientId = client.id;
+            rec.type = client.requestedOperation;
+            rec.amount = client.amount;
+            rec.balanceAfter = outcome.balanceAfter;
+            rec.timestamp = std::chrono::system_clock::now();
+            rec.success = outcome.ok();
+            rec.errorMessage = outcome.ok() ? std::string{} : to_string(outcome.status);
+            log_.push_back(rec);
+
+            // Обновляем реестр и статистику.
+            roster_[client.id - 1].state = ClientState::Served;
             ++totalServed_;
+            sumWaitModel_ += waitedModel;
+            sumServiceModel_ += serviceModelSec;
+            busyModel_ += serviceModelSec;
             currentClient_.reset();
 
             // Если мы всё ещё в режиме Serving (проснулись по таймауту, штатно) —
@@ -229,6 +255,9 @@ AtmSnapshot AtmEngine::snapshot() const {
     s.totalLeft = totalLeft_;
     s.queueLength = queue_.size();
     s.maxQueueLength = maxQueueLen_;
+    s.uptimeSeconds =
+        std::chrono::duration<double>(Clock::now() - startTime_).count() * cfg_.simulation.timeScale;
+    s.lowCash = cashbox_.balance() < cfg_.atm.lowCashThreshold;
     return s;
 }
 
@@ -254,6 +283,66 @@ Money AtmEngine::accountsTotal() const {
     Money total = 0;
     for (const auto& a : accounts_) total += a.balance();
     return total;
+}
+
+StatsSnapshot AtmEngine::statsSnapshot() const {
+    std::shared_lock<std::shared_mutex> lock(mutex_);
+    StatsSnapshot s;
+    s.served = totalServed_;
+    s.left = totalLeft_;
+    s.avgWaitSeconds = (totalServed_ > 0) ? sumWaitModel_ / static_cast<double>(totalServed_) : 0.0;
+    s.avgServiceSeconds = (totalServed_ > 0) ? sumServiceModel_ / static_cast<double>(totalServed_) : 0.0;
+    s.maxQueueLength = maxQueueLen_;
+
+    // ρ = λ/μ из конфигурации (§10).
+    const double lambda = cfg_.clients.arrivalRatePerMinute / 60.0;
+    const double mu = (cfg_.serviceTime.meanSeconds > 0.0) ? 1.0 / cfg_.serviceTime.meanSeconds : 0.0;
+    s.rhoTheoretical = (mu > 0.0) ? lambda / mu : 0.0;
+
+    const double uptimeModel =
+        std::chrono::duration<double>(Clock::now() - startTime_).count() * cfg_.simulation.timeScale;
+    s.uptimeSeconds = uptimeModel;
+    s.utilization = (uptimeModel > 0.0) ? busyModel_ / uptimeModel : 0.0;
+    return s;
+}
+
+std::optional<ClientReport> AtmEngine::clientReport(ClientId id) const {
+    std::shared_lock<std::shared_mutex> lock(mutex_);
+    if (id == 0 || id > roster_.size()) return std::nullopt;
+    const Client& c = roster_[static_cast<std::size_t>(id - 1)];
+    ClientReport r;
+    r.id = c.id;
+    r.state = c.state;
+    r.requestedOperation = c.requestedOperation;
+    r.amount = c.amount;
+    r.patienceSeconds = static_cast<long>(c.patience.count());
+    r.accountBalance = accounts_[static_cast<std::size_t>(c.accountId)].balance();
+    for (const auto& rec : log_) {
+        if (rec.clientId == id) r.history.push_back(rec);
+    }
+    return r;
+}
+
+std::optional<Money> AtmEngine::balanceOf(ClientId id) const {
+    std::shared_lock<std::shared_mutex> lock(mutex_);
+    if (id == 0 || id > roster_.size()) return std::nullopt;
+    const Client& c = roster_[static_cast<std::size_t>(id - 1)];
+    return accounts_[static_cast<std::size_t>(c.accountId)].balance();
+}
+
+std::vector<OperationRecord> AtmEngine::operations(const OperationFilter& filter) const {
+    std::shared_lock<std::shared_mutex> lock(mutex_);
+    std::vector<OperationRecord> out;
+    for (const auto& rec : log_) {
+        if (filter.client && rec.clientId != *filter.client) continue;
+        if (filter.type && rec.type != *filter.type) continue;
+        out.push_back(rec);
+    }
+    // --last N: оставляем только последние N записей.
+    if (filter.last && out.size() > *filter.last) {
+        out.erase(out.begin(), out.end() - static_cast<std::ptrdiff_t>(*filter.last));
+    }
+    return out;
 }
 
 }  // namespace atmsim

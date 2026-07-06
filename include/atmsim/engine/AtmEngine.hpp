@@ -12,6 +12,7 @@
 //  Состояние-режим (state_) — atomic, чтобы быстро проверять его в предикатах.
 // ============================================================================
 #include <atomic>
+#include <chrono>
 #include <condition_variable>
 #include <cstddef>
 #include <cstdint>
@@ -45,9 +46,13 @@ public:
     void requestResume();
     void requestStop();
 
-    // --- Снимки для отчётов (потокобезопасное чтение под shared_lock) --------
+    // --- Снимки и отчёты (потокобезопасное чтение под shared_lock) -----------
     AtmSnapshot snapshot() const;
     std::vector<ClientSnapshot> queueSnapshot() const;
+    StatsSnapshot statsSnapshot() const;                       // команда stats
+    std::optional<ClientReport> clientReport(ClientId id) const; // команда client
+    std::optional<Money> balanceOf(ClientId id) const;         // команда balance
+    std::vector<OperationRecord> operations(const OperationFilter& filter) const; // operations
 
     // Сумма балансов всех счетов — для проверки инварианта денег и статистики.
     Money accountsTotal() const;
@@ -90,6 +95,18 @@ private:
     std::uint64_t totalServed_{0};
     std::uint64_t totalLeft_{0};
     std::size_t maxQueueLen_{0};
+
+    // Отчётность (всё под mutex_): журнал операций и реестр ВСЕХ клиентов
+    // (чтобы отвечать на client <id> даже после того, как клиент ушёл/обслужен).
+    std::vector<OperationRecord> log_;
+    std::vector<Client> roster_;       // roster_[id-1] — клиент с этим id
+    std::uint64_t nextOperationId_{1}; // только поток обслуживания
+
+    // Аккумуляторы статистики (модельные секунды), пишет поток обслуживания.
+    double sumWaitModel_{0.0};
+    double sumServiceModel_{0.0};
+    double busyModel_{0.0};
+    std::chrono::steady_clock::time_point startTime_;  // момент старта (для аптайма)
 
     int generatedCount_{0};            // только поток прихода
     ClientId nextClientId_{1};         // только поток прихода

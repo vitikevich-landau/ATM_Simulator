@@ -118,6 +118,47 @@ TEST(engine_stop_is_immediate_during_long_service) {
     CHECK(elapsed < 1s);
 }
 
+// В журнале ровно одна запись на каждого обслуженного клиента (§4.4).
+TEST(engine_logs_one_record_per_served) {
+    const int count = 30;
+    Config cfg = fastConfig(count, 1000.0);
+    AtmEngine engine(cfg);
+    runToCompletion(engine, count, 10s);
+
+    const AtmSnapshot s = engine.snapshot();
+    CHECK_EQ(engine.operations(OperationFilter{}).size(), static_cast<std::size_t>(s.totalServed));
+}
+
+// Отчёт по клиенту доступен, и его итоговый статус осмыслен.
+TEST(engine_client_report_available_after_run) {
+    const int count = 20;
+    Config cfg = fastConfig(count, 1000.0);
+    AtmEngine engine(cfg);
+    runToCompletion(engine, count, 10s);
+
+    const auto rep = engine.clientReport(1);
+    CHECK(rep.has_value());
+    if (rep) {
+        CHECK(rep->state == ClientState::Served || rep->state == ClientState::LeftQueue);
+    }
+    CHECK(!engine.clientReport(0).has_value());               // нет клиента #0
+    CHECK(!engine.clientReport(count + 100).has_value());     // за пределами
+}
+
+// Фильтр operations --type возвращает только записи нужного типа.
+TEST(engine_operations_filter_by_type) {
+    const int count = 40;
+    Config cfg = fastConfig(count, 1000.0);
+    AtmEngine engine(cfg);
+    runToCompletion(engine, count, 10s);
+
+    OperationFilter f;
+    f.type = OperationType::Withdraw;
+    for (const auto& r : engine.operations(f)) {
+        CHECK(r.type == OperationType::Withdraw);
+    }
+}
+
 // pause переводит банкомат в состояние Paused, resume — обратно.
 TEST(engine_pause_and_resume_change_state) {
     Config cfg = fastConfig(0, 1.0);  // без клиентов — проверяем только режимы

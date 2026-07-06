@@ -92,8 +92,9 @@ add_library(atmsim_engine
     src/engine/AtmEngine.cpp)
 target_link_libraries(atmsim_engine PUBLIC atmsim_config)
 
-# --- Консоль администратора (M3) ---------------------------------------------
+# --- Консоль администратора (M3 + M4: парсер команд, отчёты) ------------------
 add_library(atmsim_console
+    src/console/CommandParser.cpp
     src/console/AdminConsole.cpp)
 target_link_libraries(atmsim_console PUBLIC atmsim_engine)
 
@@ -116,8 +117,9 @@ if(ATMSIM_BUILD_TESTS)
         tests/test_config.cpp
         tests/test_service_time.cpp
         tests/test_simulation.cpp
-        tests/test_engine.cpp)
+        tests/test_engine.cpp
+        tests/test_parser.cpp)
     target_include_directories(atmsim_tests PRIVATE tests)
-    target_link_libraries(atmsim_tests PRIVATE atmsim_engine)
+    target_link_libraries(atmsim_tests PRIVATE atmsim_console)
     add_test(NAME unit COMMAND atmsim_tests)
 endif()
