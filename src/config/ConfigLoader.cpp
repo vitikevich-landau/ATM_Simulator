@@ -1,5 +1,6 @@
 #include "atmsim/config/ConfigLoader.hpp"
 
+#include <filesystem>
 #include <fstream>
 #include <sstream>
 #include <string>
@@ -172,9 +173,30 @@ Config ConfigLoader::loadFromString(const std::string& jsonText) {
 }
 
 Config ConfigLoader::loadFromFile(const std::string& path) {
-    std::ifstream in(path, std::ios::binary);
+    namespace fs = std::filesystem;
+    std::error_code ec;
+
+    // Ищем файл конфигурации. Сначала — по указанному пути (как есть). Если его
+    // там нет, а путь ОТНОСИТЕЛЬНЫЙ (например, "config/default_config.json"),
+    // поднимаемся вверх по дереву каталогов от текущей рабочей папки и пробуем
+    // найти его там. Это нужно, потому что при запуске из IDE рабочая папка —
+    // подкаталог сборки (out/build/x64-Debug), а config/ лежит в корне проекта.
+    fs::path resolved(path);
+    if (!fs::exists(resolved, ec) && resolved.is_relative()) {
+        for (fs::path dir = fs::current_path(ec); ; dir = dir.parent_path()) {
+            const fs::path candidate = dir / path;
+            if (fs::exists(candidate, ec)) {
+                resolved = candidate;
+                break;
+            }
+            if (dir == dir.parent_path()) break;  // дошли до корня файловой системы
+        }
+    }
+
+    std::ifstream in(resolved, std::ios::binary);
     if (!in) {
-        throw ConfigError("не удалось открыть файл конфигурации: " + path);
+        throw ConfigError("не удалось открыть файл конфигурации: " + path +
+                          " (искал по этому пути, а также вверх по каталогам от текущей папки)");
     }
     std::ostringstream ss;
     ss << in.rdbuf();

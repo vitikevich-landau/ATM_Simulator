@@ -18,6 +18,7 @@
 #include "atmsim/console/Signals.hpp"
 #include "atmsim/engine/AtmEngine.hpp"
 #include "atmsim/reporting/Logger.hpp"
+#include "utils/ru_console.hpp"
 
 using namespace atmsim;
 
