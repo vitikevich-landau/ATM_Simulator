@@ -1,18 +1,23 @@
 // ============================================================================
 //  main.cpp — точка входа консольного симулятора банкомата.
 //
-//  Этап M2: загружаем конфигурацию и прогоняем ОДНОПОТОЧНУЮ (дискретно-событийную)
-//  симуляцию очереди, печатаем сводную статистику СМО. Многопоточность и живой
-//  дашборд появятся в M3/M6. Ошибки конфигурации (§6.5) ловятся здесь.
+//  Этап M3: симуляция стала МНОГОПОТОЧНОЙ. Здесь мы связываем всё вместе:
+//    * поток обслуживания (AtmEngine::run) и поток прихода клиентов —
+//      каждый в своём std::jthread;
+//    * консоль администратора (AdminConsole) — в главном потоке.
+//  std::jthread сам пошлёт request_stop() и сделает join() в деструкторе (RAII),
+//  поэтому вручную об этом помнить не нужно (§6.2).
 // ============================================================================
 
-#include <iomanip>
 #include <iostream>
+#include <stop_token>
 #include <string>
+#include <thread>
 
 #include "atmsim/Version.hpp"
 #include "atmsim/config/ConfigLoader.hpp"
-#include "atmsim/engine/SimulationRunner.hpp"
+#include "atmsim/console/AdminConsole.hpp"
+#include "atmsim/engine/AtmEngine.hpp"
 
 using namespace atmsim;
 
@@ -22,32 +27,31 @@ int main(int argc, char** argv) {
     try {
         const Config cfg = ConfigLoader::loadFromFile(path);
 
-        std::cout << kProjectName << " v" << kVersion << " — однопоточная симуляция (M2)\n";
-        std::cout << "Конфиг: " << path << "  |  seed=" << cfg.simulation.randomSeed << "\n\n";
+        std::cout << kProjectName << " v" << kVersion << " — многопоточная симуляция (M3)\n";
+        std::cout << "Конфиг: " << path << "  |  клиентов: " << cfg.clients.count << "\n\n";
 
-        const SimulationResult r = SimulationRunner::run(cfg);
+        AtmEngine engine(cfg);
 
-        std::cout << std::fixed << std::setprecision(1);
-        std::cout << "=== Результаты симуляции ===\n";
-        std::cout << "Клиентов всего:      " << r.totalClients << '\n';
-        std::cout << "Обслужено:           " << r.served
-                  << "  (успех " << r.opSuccess << ", отказ " << r.opFailed << ")\n";
-        std::cout << "Ушли по терпению:    " << r.leftByPatience << '\n';
-        std::cout << "Среднее ожидание:    " << r.avgWaitSeconds << " c\n";
-        std::cout << "Среднее обслуж.:     " << r.avgServiceSeconds << " c\n";
-        std::cout << "Макс. длина очереди: " << r.maxQueueLength << '\n';
-        std::cout << "Загрузка rho=lambda/mu: " << std::setprecision(2) << r.rhoTheoretical
-                  << (r.rhoTheoretical > 1.0 ? "  (>1 — система перегружена)" : "") << '\n';
-        std::cout << "Факт. загрузка:      " << r.serverUtilization << '\n';
-        std::cout << std::setprecision(1)
-                  << "Длительность:        " << r.totalModelSeconds << " c модельного времени\n\n";
+        // Запускаем два рабочих потока. Лямбда получает stop_token от jthread.
+        std::jthread engineThread([&engine](std::stop_token st) { engine.run(st); });
+        std::jthread arrivalThread([&engine](std::stop_token st) { engine.generateArrivals(st); });
 
-        std::cout << "Касса:  " << formatMoney(r.cashStart) << " -> " << formatMoney(r.cashEnd)
-                  << ' ' << cfg.atm.currency << '\n';
-        std::cout << "Счета:  " << formatMoney(r.accountsStart) << " -> " << formatMoney(r.accountsEnd)
-                  << ' ' << cfg.atm.currency << '\n';
-        std::cout << "Инвариант денег (счета - касса неизменны): "
-                  << (r.moneyConserved ? "OK" : "НАРУШЕН!") << '\n';
+        // Консоль блокирует главный поток до команды stop/exit или конца ввода.
+        AdminConsole console(engine, cfg);
+        console.run();
+
+        // Гарантируем остановку движка (если вышли по EOF, а не по stop).
+        engine.requestStop();
+        engineThread.request_stop();
+        arrivalThread.request_stop();
+        engineThread.join();
+        arrivalThread.join();
+
+        // Итоговая сводка (полная статистика — на M4).
+        const AtmSnapshot s = engine.snapshot();
+        std::cout << "\nИтог: обслужено " << s.totalServed
+                  << ", ушли по терпению " << s.totalLeft
+                  << ", касса " << formatMoney(s.cashboxBalance) << ' ' << cfg.atm.currency << '\n';
     } catch (const ConfigError& e) {
         std::cerr << "Ошибка конфигурации: " << e.what() << '\n';
         return 1;
