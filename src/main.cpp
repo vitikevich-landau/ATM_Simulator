@@ -50,7 +50,7 @@ int main(int argc, char** argv) {
         // Итоговая сводка (полная статистика — на M4).
         const AtmSnapshot s = engine.snapshot();
         std::cout << "\nИтог: обслужено " << s.totalServed
-                  << ", ушли по терпению " << s.totalLeft
+                  << ", ушли (всего) " << s.totalLeft
                   << ", касса " << formatMoney(s.cashboxBalance) << ' ' << cfg.atm.currency << '\n';
     } catch (const ConfigError& e) {
         std::cerr << "Ошибка конфигурации: " << e.what() << '\n';

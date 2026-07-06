@@ -86,6 +86,15 @@ void AtmEngine::generateArrivals(std::stop_token stopToken) {
             if (stopToken.stop_requested() || state_.load() == AtmState::Stopped) return;
         }
 
+        // Если по конфигу приход НЕ продолжается во время ТО (§4.5 п.4) — ждём
+        // окончания ТО, прежде чем впускать нового клиента. По умолчанию приход
+        // продолжается (люди подходят и видят, что банкомат недоступен).
+        if (!cfg_.maintenance.arrivalsContinue) {
+            std::unique_lock<std::shared_mutex> lock(mutex_);
+            wakeUp_.wait(lock, stopToken, [this] { return state_.load() != AtmState::Maintenance; });
+            if (stopToken.stop_requested() || state_.load() == AtmState::Stopped) return;
+        }
+
         Client c = makeClient();  // трогает только arrivalRng_/счётчики этого потока
 
         {
@@ -114,17 +123,38 @@ void AtmEngine::run(std::stop_token stopToken) {
         {
             std::unique_lock<std::shared_mutex> lock(mutex_);
 
+            // РЕЖИМ ТО (§4.5). Обрабатываем отдельно: новых клиентов не берём,
+            // ждём конца ТО (по таймеру или по команде maintenance stop).
+            if (state_.load() == AtmState::Maintenance) {
+                // Один раз при входе в ТО — каждый в очереди «решает» уйти/остаться.
+                if (maintenanceRenegePending_) {
+                    applyMaintenanceRenegingLocked();
+                    maintenanceRenegePending_ = false;
+                }
+                // Ждём: наступит дедлайн ТО, ЛИБО сменится режим (maintenance stop /
+                // stop), смотря что раньше. Прерываемо по stop_token.
+                wakeUp_.wait_until(lock, stopToken, maintenanceDeadline_,
+                                   [this] { return state_.load() != AtmState::Maintenance; });
+                // Если всё ещё ТО и время вышло — авто-завершение.
+                if (state_.load() == AtmState::Maintenance && Clock::now() >= maintenanceDeadline_) {
+                    state_.store(queue_.empty() ? AtmState::Idle : AtmState::Serving);
+                }
+                continue;  // на новый круг: там уже обычный режим
+            }
+
             // «Спим с условием»: просыпаемся, когда есть кого обслуживать в рабочем
-            // режиме, ЛИБО пришла остановка, ЛИБО (из паузы) сменился режим. На
+            // режиме, ЛИБО пришла остановка, ЛИБО сменился режим (пауза/ТО). На
             // паузе предикат ложен — значит продолжаем спать, не крутя цикл впустую.
             wakeUp_.wait(lock, stopToken, [this] {
                 const AtmState s = state_.load();
                 if (s == AtmState::Stopped) return true;
-                if (s == AtmState::Paused) return false;  // на паузе клиентов не берём
+                if (s == AtmState::Maintenance) return true;  // выйти -> обработать ТО сверху
+                if (s == AtmState::Paused) return false;      // на паузе клиентов не берём
                 return !queue_.empty();
             });
 
             if (stopToken.stop_requested() || state_.load() == AtmState::Stopped) break;
+            if (state_.load() == AtmState::Maintenance) continue;  // на след. круге — ветка ТО
             if (state_.load() == AtmState::Paused || queue_.empty()) continue;
 
             client = queue_.front();
@@ -238,6 +268,58 @@ void AtmEngine::requestStop() {
     wakeUp_.notify_all();
 }
 
+void AtmEngine::requestMaintenance(std::optional<int> durationSeconds) {
+    {
+        std::unique_lock<std::shared_mutex> lock(mutex_);
+        if (state_.load() == AtmState::Stopped) return;
+
+        // Длительность (в МОДЕЛЬНЫХ секундах): явная из аргумента, иначе из конфига.
+        const int durModel = durationSeconds.value_or(cfg_.maintenance.defaultDurationSeconds);
+        if (durModel > 0) {
+            // Модель бежит в time_scale раз быстрее реального времени.
+            const double realSec = static_cast<double>(durModel) / cfg_.simulation.timeScale;
+            maintenanceDeadline_ = Clock::now() +
+                std::chrono::duration_cast<Clock::duration>(std::chrono::duration<double>(realSec));
+        } else {
+            maintenanceDeadline_ = Clock::time_point::max();  // до явной команды stop
+        }
+        state_.store(AtmState::Maintenance);
+        maintenanceRenegePending_ = true;  // поток обслуживания применит уйти/остаться
+    }
+    wakeUp_.notify_all();
+}
+
+void AtmEngine::endMaintenance() {
+    {
+        std::unique_lock<std::shared_mutex> lock(mutex_);
+        if (state_.load() == AtmState::Maintenance) {
+            state_.store(queue_.empty() ? AtmState::Idle : AtmState::Serving);
+        }
+    }
+    wakeUp_.notify_all();
+}
+
+void AtmEngine::applyMaintenanceRenegingLocked() {
+    // Каждый стоящий в очереди с вероятностью renege_probability уходит сразу
+    // (§4.5 п.3), остальные остаются ждать (но не дольше своего терпения — это
+    // отработает обычная проверка reneging при выборке). serviceRng_ принадлежит
+    // только потоку обслуживания, откуда мы и вызваны, поэтому гонки за RNG нет.
+    std::bernoulli_distribution leaves(cfg_.maintenance.renegeProbability);
+    std::deque<Client> kept;
+    while (!queue_.empty()) {
+        Client c = queue_.front();
+        queue_.pop_front();
+        if (leaves(serviceRng_)) {
+            roster_[c.id - 1].state = ClientState::LeftQueue;
+            ++totalLeft_;
+            ++totalLeftMaintenance_;
+        } else {
+            kept.push_back(c);
+        }
+    }
+    queue_ = std::move(kept);
+}
+
 // ---------------------------------------------------------------------------
 //  СНИМКИ. Читатели берут shared_lock — параллельно друг другу и не мешая
 //  писателю дольше, чем нужно на копирование небольшого объёма данных.
@@ -258,6 +340,17 @@ AtmSnapshot AtmEngine::snapshot() const {
     s.uptimeSeconds =
         std::chrono::duration<double>(Clock::now() - startTime_).count() * cfg_.simulation.timeScale;
     s.lowCash = cashbox_.balance() < cfg_.atm.lowCashThreshold;
+
+    // Остаток режима ТО (для status/atm/дашборда).
+    if (state_.load() == AtmState::Maintenance) {
+        if (maintenanceDeadline_ == Clock::time_point::max()) {
+            s.maintenanceEtaSeconds = -1.0;  // до явной команды stop
+        } else {
+            const double realLeft =
+                std::chrono::duration<double>(maintenanceDeadline_ - Clock::now()).count();
+            s.maintenanceEtaSeconds = (realLeft > 0.0) ? realLeft * cfg_.simulation.timeScale : 0.0;
+        }
+    }
     return s;
 }
 
@@ -290,6 +383,7 @@ StatsSnapshot AtmEngine::statsSnapshot() const {
     StatsSnapshot s;
     s.served = totalServed_;
     s.left = totalLeft_;
+    s.renegedByMaintenance = totalLeftMaintenance_;
     s.avgWaitSeconds = (totalServed_ > 0) ? sumWaitModel_ / static_cast<double>(totalServed_) : 0.0;
     s.avgServiceSeconds = (totalServed_ > 0) ? sumServiceModel_ / static_cast<double>(totalServed_) : 0.0;
     s.maxQueueLength = maxQueueLen_;

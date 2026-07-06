@@ -1,5 +1,6 @@
 #include <chrono>
 #include <cstdint>
+#include <optional>
 #include <stop_token>
 #include <thread>
 
@@ -157,6 +158,66 @@ TEST(engine_operations_filter_by_type) {
     for (const auto& r : engine.operations(f)) {
         CHECK(r.type == OperationType::Withdraw);
     }
+}
+
+// maintenance start переводит в Maintenance, maintenance stop — обратно.
+TEST(engine_maintenance_state_transitions) {
+    Config cfg = fastConfig(0, 1.0);  // без клиентов — проверяем только режим
+    AtmEngine engine(cfg);
+    std::jthread eng([&](std::stop_token st) { engine.run(st); });
+
+    engine.requestMaintenance(std::optional<int>(3600));  // долго, не авто-завершится
+    std::this_thread::sleep_for(30ms);
+    CHECK(engine.snapshot().state == AtmState::Maintenance);
+
+    engine.endMaintenance();
+    std::this_thread::sleep_for(30ms);
+    CHECK(engine.snapshot().state != AtmState::Maintenance);
+
+    engine.requestStop();
+    eng.request_stop();
+    eng.join();
+    CHECK(engine.isStopped());
+}
+
+// При старте ТО клиенты из очереди уходят с вероятностью renege_probability.
+// Ставим её в 1.0 — значит все стоящие в очереди должны уйти (§4.5).
+TEST(engine_maintenance_reneges_queued_clients) {
+    Config cfg = fastConfig(30, 1000.0);
+    cfg.clients.arrivalRatePerMinute = 120.0;                 // приходят часто
+    cfg.serviceTime.distribution = ServiceDistribution::Uniform;
+    cfg.serviceTime.minSeconds = 40.0;                        // обслуживание долгое ->
+    cfg.serviceTime.maxSeconds = 40.0;                        // очередь копится
+    cfg.clients.patienceSeconds = SecondsRange{100000, 100000};  // по терпению не уходят
+    cfg.maintenance.renegeProbability = 1.0;                  // при ТО уходят все из очереди
+    cfg.maintenance.defaultDurationSeconds = 1000000;         // ТО долгое, чтобы наблюсти
+
+    AtmEngine engine(cfg);
+    std::jthread eng([&](std::stop_token st) { engine.run(st); });
+    std::jthread arr([&](std::stop_token st) { engine.generateArrivals(st); });
+
+    // Ждём, пока в очереди накопится хотя бы 3 клиента.
+    auto deadline = std::chrono::steady_clock::now() + 5s;
+    while (std::chrono::steady_clock::now() < deadline && engine.snapshot().queueLength < 3) {
+        std::this_thread::sleep_for(2ms);
+    }
+    CHECK(engine.snapshot().queueLength >= 3);
+
+    engine.requestMaintenance(std::nullopt);
+
+    // Ждём, пока поток обслуживания применит решение «уйти/остаться».
+    auto d2 = std::chrono::steady_clock::now() + 3s;
+    while (std::chrono::steady_clock::now() < d2 &&
+           engine.statsSnapshot().renegedByMaintenance == 0) {
+        std::this_thread::sleep_for(2ms);
+    }
+    CHECK(engine.statsSnapshot().renegedByMaintenance > 0);
+
+    engine.requestStop();
+    eng.request_stop();
+    arr.request_stop();
+    eng.join();
+    arr.join();
 }
 
 // pause переводит банкомат в состояние Paused, resume — обратно.

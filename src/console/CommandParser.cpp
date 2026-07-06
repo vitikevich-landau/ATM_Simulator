@@ -59,6 +59,27 @@ Command parseCommand(const std::string& line) {
         c.type = CommandType::Pause;
     } else if (cmd == "resume") {
         c.type = CommandType::Resume;
+    } else if (cmd == "maintenance") {
+        if (tok.size() < 2) {
+            c.error = "нужно: maintenance start [сек] | maintenance stop";
+            return c;
+        }
+        if (tok[1] == "start") {
+            c.type = CommandType::MaintenanceStart;
+            if (tok.size() >= 3) {  // необязательная длительность
+                long long n = 0;
+                if (!parsePositive(tok[2], n)) {
+                    c.error = "неверная длительность ТО: '" + tok[2] + "'";
+                    return c;
+                }
+                c.seconds = static_cast<int>(n);
+            }
+        } else if (tok[1] == "stop") {
+            c.type = CommandType::MaintenanceStop;
+        } else {
+            c.error = "ожидалось 'start' или 'stop' после maintenance";
+            return c;
+        }
     } else if (cmd == "stop" || cmd == "exit" || cmd == "quit") {
         c.type = CommandType::Stop;
     } else if (cmd == "client" || cmd == "balance") {

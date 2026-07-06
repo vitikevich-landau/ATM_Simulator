@@ -29,6 +29,9 @@ struct AtmSnapshot {
     std::size_t maxQueueLength{0};
     double uptimeSeconds{0.0};                        // аптайм в модельных секундах
     bool lowCash{false};                              // касса ниже порога инкассации
+    // Остаток режима ТО в модельных секундах: 0 — не в ТО; -1 — ТО до явной
+    // команды maintenance stop; >0 — сколько ещё осталось.
+    double maintenanceEtaSeconds{0.0};
 };
 
 // Снимок одного ожидающего клиента (команда queue / дашборд).
@@ -54,7 +57,8 @@ struct ClientReport {
 // Сводная статистика СМО в реальном времени (команда stats).
 struct StatsSnapshot {
     std::uint64_t served{0};
-    std::uint64_t left{0};
+    std::uint64_t left{0};                    // всего ушли (терпение + ТО)
+    std::uint64_t renegedByMaintenance{0};    // из них — ушли из-за ТО (§4.5)
     double avgWaitSeconds{0.0};
     double avgServiceSeconds{0.0};
     std::size_t maxQueueLength{0};

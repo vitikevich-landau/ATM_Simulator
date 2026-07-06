@@ -68,3 +68,22 @@ TEST(parser_export) {
     CHECK_EQ(c.filename, std::string("out.csv"));
     CHECK(!parseCommand("export").error.empty());  // нет имени файла
 }
+
+TEST(parser_maintenance) {
+    CHECK(parseCommand("maintenance stop").type == CommandType::MaintenanceStop);
+
+    const Command a = parseCommand("maintenance start");
+    CHECK(a.type == CommandType::MaintenanceStart);
+    CHECK(!a.seconds.has_value());  // без длительности
+
+    const Command b = parseCommand("maintenance start 120");
+    CHECK(b.type == CommandType::MaintenanceStart);
+    CHECK(b.seconds.has_value());
+    CHECK_EQ(*b.seconds, 120);
+}
+
+TEST(parser_maintenance_errors) {
+    CHECK(!parseCommand("maintenance").error.empty());        // нет start/stop
+    CHECK(!parseCommand("maintenance frob").error.empty());   // не start/stop
+    CHECK(!parseCommand("maintenance start abc").error.empty()); // длительность не число
+}

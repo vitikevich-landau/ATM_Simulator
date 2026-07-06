@@ -45,6 +45,11 @@ public:
     void requestPause();
     void requestResume();
     void requestStop();
+    // Техобслуживание (§4.5). durationSeconds — длительность в МОДЕЛЬНЫХ секундах;
+    // если не задано — берётся default_duration_seconds из конфига; значение <= 0
+    // означает «до явной команды maintenance stop».
+    void requestMaintenance(std::optional<int> durationSeconds);
+    void endMaintenance();
 
     // --- Снимки и отчёты (потокобезопасное чтение под shared_lock) -----------
     AtmSnapshot snapshot() const;
@@ -63,6 +68,9 @@ private:
     // Вспомогательные (вызываются строго из потока прихода / под локом).
     Client makeClient();                              // только поток прихода
     double modelSecondsWaited(const Client& c) const; // сколько модельных сек. ждёт
+    // Решение «уйти/остаться» для всех в очереди при старте ТО (§4.5). Вызывается
+    // из потока обслуживания, ПОД уже захваченным mutex_ (потому «Locked»).
+    void applyMaintenanceRenegingLocked();
 
     Config cfg_;
 
@@ -93,8 +101,14 @@ private:
 
     std::optional<Client> currentClient_;  // кого обслуживаем сейчас (защищён mutex_)
     std::uint64_t totalServed_{0};
-    std::uint64_t totalLeft_{0};
+    std::uint64_t totalLeft_{0};              // всего ушли (терпение + ТО)
+    std::uint64_t totalLeftMaintenance_{0};   // из них — ушли из-за ТО
     std::size_t maxQueueLen_{0};
+
+    // Режим ТО (§4.5): дедлайн авто-завершения и одноразовый флаг «применить
+    // решение уйти/остаться к очереди». Оба под mutex_.
+    std::chrono::steady_clock::time_point maintenanceDeadline_{};
+    bool maintenanceRenegePending_{false};
 
     // Отчётность (всё под mutex_): журнал операций и реестр ВСЕХ клиентов
     // (чтобы отвечать на client <id> даже после того, как клиент ушёл/обслужен).

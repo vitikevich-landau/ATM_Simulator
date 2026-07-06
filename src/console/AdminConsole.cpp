@@ -53,6 +53,8 @@ void AdminConsole::printHelp() const {
         "  atm                               — состояние банкомата (касса, аптайм)\n"
         "  stats                             — статистика СМО (ожидание, загрузка, ρ)\n"
         "  pause / resume                    — приостановить / возобновить обслуживание\n"
+        "  maintenance start [сек]           — техобслуживание (по умолч. длительность из конфига)\n"
+        "  maintenance stop                  — досрочно завершить техобслуживание\n"
         "  export <file>                     — выгрузить журнал операций в CSV\n"
         "  stop                              — плавно остановить и выйти\n";
 }
@@ -70,9 +72,14 @@ void AdminConsole::printStatus() const {
     std::cout << "В очереди:         " << s.queueLength
               << "  (макс. за прогон " << s.maxQueueLength << ")\n";
     std::cout << "Обслужено:         " << s.totalServed << '\n';
-    std::cout << "Ушли по терпению:  " << s.totalLeft << '\n';
+    std::cout << "Ушли (всего):      " << s.totalLeft << '\n';
     std::cout << "Касса:             " << formatMoney(s.cashboxBalance) << ' ' << cfg_.atm.currency
               << (s.lowCash ? "  [НИЗКАЯ КАССА]" : "") << '\n';
+    if (s.state == AtmState::Maintenance) {
+        std::cout << "ТО: ";
+        if (s.maintenanceEtaSeconds < 0.0) std::cout << "до команды maintenance stop\n";
+        else std::cout << "осталось ~" << static_cast<long>(s.maintenanceEtaSeconds) << " c\n";
+    }
 }
 
 void AdminConsole::printQueue() const {
@@ -150,7 +157,8 @@ void AdminConsole::printStats() const {
     const StatsSnapshot s = engine_.statsSnapshot();
     std::cout << "=== Статистика СМО ===\n";
     std::cout << "Обслужено:            " << s.served << '\n';
-    std::cout << "Ушли по терпению:     " << s.left << '\n';
+    std::cout << "Ушли (всего):         " << s.left
+              << "  (из них по ТО: " << s.renegedByMaintenance << ")\n";
     std::cout << std::fixed << std::setprecision(1);
     std::cout << "Среднее ожидание:     " << s.avgWaitSeconds << " c\n";
     std::cout << "Среднее обслуживание: " << s.avgServiceSeconds << " c\n";
@@ -208,6 +216,14 @@ void AdminConsole::run() {
             case CommandType::Resume:
                 engine_.requestResume();
                 std::cout << "Обслуживание возобновлено.\n";
+                break;
+            case CommandType::MaintenanceStart:
+                engine_.requestMaintenance(c.seconds);
+                std::cout << "Начато техобслуживание.\n";
+                break;
+            case CommandType::MaintenanceStop:
+                engine_.endMaintenance();
+                std::cout << "Техобслуживание завершено.\n";
                 break;
             case CommandType::Export: doExport(c.filename); break;
             case CommandType::Stop:

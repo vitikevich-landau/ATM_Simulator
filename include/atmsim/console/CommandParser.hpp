@@ -26,6 +26,8 @@ enum class CommandType {
     Stats,
     Pause,
     Resume,
+    MaintenanceStart,  // maintenance start [сек]
+    MaintenanceStop,   // maintenance stop
     Stop,        // stop / exit / quit
     Export,      // export <file>
     Unknown      // нераспознанная команда
@@ -36,6 +38,7 @@ struct Command {
     std::optional<ClientId> clientId;      // для client/balance и operations --client
     std::optional<std::size_t> last;       // operations --last N
     std::optional<OperationType> opType;   // operations --type T
+    std::optional<int> seconds;            // maintenance start [сек]
     std::string filename;                  // export <file>
     std::string word;                      // исходное первое слово (для сообщений)
     std::string error;                     // непусто, если разбор не удался
