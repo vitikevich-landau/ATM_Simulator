@@ -1,5 +1,6 @@
 #include "atmsim/console/LiveRenderer.hpp"
 
+#include <algorithm>
 #include <chrono>
 #include <cmath>
 #include <iomanip>
@@ -12,9 +13,7 @@
 namespace atmsim {
 namespace {
 
-constexpr int kQueueRows = 6;   // сколько строк очереди показываем
-constexpr int kFeedRows = 3;    // сколько последних событий показываем
-constexpr int kSepWidth = 52;
+constexpr int kFeedRows = 4;   // сколько последних операций в правой колонке
 
 // Форматирует секунды как HH:MM:SS.
 std::string hms(double seconds) {
@@ -35,18 +34,77 @@ std::string bar(double frac, int width) {
     return s;
 }
 
-std::string sep() {
+// Повторяет UTF-8 символ n раз (для разделителей из '─').
+std::string repeatUtf8(const char* glyph, int n) {
     std::string s;
-    for (int i = 0; i < kSepWidth; ++i) s += "─";
+    for (int i = 0; i < n; ++i) s += glyph;
     return s;
+}
+
+// Видимая ширина строки в СИМВОЛАХ: пропускает ANSI-последовательности (нулевая
+// ширина) и считает каждую UTF-8 кодовую точку за одну колонку.
+int visibleWidth(const std::string& s) {
+    int w = 0;
+    for (std::size_t i = 0; i < s.size();) {
+        const unsigned char c = static_cast<unsigned char>(s[i]);
+        if (c == 0x1B) {  // ESC: пропускаем всю ANSI-последовательность
+            std::size_t j = i + 1;
+            if (j < s.size() && s[j] == '[') {
+                ++j;
+                while (j < s.size() && !(s[j] >= '@' && s[j] <= '~')) ++j;
+                if (j < s.size()) ++j;
+            }
+            i = j;
+            continue;
+        }
+        if ((c & 0xC0) != 0x80) ++w;  // не байт-продолжение UTF-8 -> новый символ
+        ++i;
+    }
+    return w;
+}
+
+// Подгоняет строку под ширину width: короткую дополняет пробелами, длинную
+// усекает (ANSI-последовательности не режет, в конце усечения закрывает цвет).
+std::string fit(const std::string& s, int width) {
+    std::string out;
+    int w = 0;
+    bool truncated = false;
+    for (std::size_t i = 0; i < s.size();) {
+        const unsigned char c = static_cast<unsigned char>(s[i]);
+        if (c == 0x1B) {  // ANSI — копируем целиком, ширина 0
+            std::size_t j = i + 1;
+            if (j < s.size() && s[j] == '[') {
+                ++j;
+                while (j < s.size() && !(s[j] >= '@' && s[j] <= '~')) ++j;
+                if (j < s.size()) ++j;
+            }
+            out.append(s, i, j - i);
+            i = j;
+            continue;
+        }
+        if (w >= width) { truncated = true; break; }
+        int bytes = 1;
+        if ((c & 0x80) == 0) bytes = 1;
+        else if ((c & 0xE0) == 0xC0) bytes = 2;
+        else if ((c & 0xF0) == 0xE0) bytes = 3;
+        else if ((c & 0xF8) == 0xF0) bytes = 4;
+        out.append(s, i, static_cast<std::size_t>(bytes));
+        ++w;
+        i += static_cast<std::size_t>(bytes);
+    }
+    // Если усекли окрашенную строку — закрываем цвет, чтобы он не «потёк» дальше.
+    if (truncated && out.find('\033') != std::string::npos) out += "\033[0m";
+    else for (; w < width; ++w) out += ' ';
+    return out;
 }
 
 }  // namespace
 
 LiveRenderer::LiveRenderer(AtmEngine& engine, const Config& cfg)
     : engine_(engine), cfg_(cfg) {
-    // Высота дашборда фиксирована (число строк в кадре одно и то же), считаем
-    // её один раз — консоль по ней размещает строку ввода НИЖЕ дашборда.
+    // Размеры терминала — один раз при создании (ресайз на лету — v2).
+    width_ = std::clamp(Terminal::width(), 60, 200);
+    termHeight_ = std::clamp(Terminal::height(), 16, 60);
     height_ = static_cast<int>(composeLines().size());
 }
 
@@ -55,37 +113,48 @@ std::vector<std::string> LiveRenderer::composeLines() const {
     auto C = [color](const char* code) { return color ? std::string(code) : std::string(); };
     auto R = [color] { return color ? std::string(ansi::reset()) : std::string(); };
 
-    // Три снимка — это три коротких чтения под shared_lock. В v1 допускаем, что
-    // панели могут быть из соседних мгновений (расхождение ~мс); для строгой
-    // консистентности §4.8.3 рекомендует единый dashboardSnapshot().
+    // Сумма со знаком и цветом по направлению: внесение — зелёным «+», снятие —
+    // красным «−»; для проверки баланса суммы нет.
+    auto signedAmount = [&](OperationType op, Money amount) -> std::string {
+        if (op == OperationType::Deposit)  return C(ansi::green()) + "+" + formatMoney(amount) + R();
+        if (op == OperationType::Withdraw) return C(ansi::red())   + "-" + formatMoney(amount) + R();
+        return std::string{};
+    };
+
     const AtmSnapshot s = engine_.snapshot();
+    const StatsSnapshot st = engine_.statsSnapshot();
     const std::vector<ClientSnapshot> q = engine_.queueSnapshot();
     OperationFilter feedFilter;
     feedFilter.last = static_cast<std::size_t>(kFeedRows);
     const std::vector<OperationRecord> ops = engine_.operations(feedFilter);
 
     const std::string cur = cfg_.atm.currency;
+
+    // Геометрия: левая колонка (очередь) шире, правая — статистика/лента.
+    const int leftW = std::clamp(width_ - 42, 40, 54);
+    const int rightW = width_ - leftW - 3;              // 3 = " │ "
+    const int queueVisible = std::max(4, termHeight_ - 13);
+
+    // Цвет маркера состояния.
+    const char* sc = ansi::grey();
+    switch (s.state) {
+        case AtmState::Serving:     sc = ansi::green();  break;
+        case AtmState::Paused:      sc = ansi::yellow(); break;
+        case AtmState::Maintenance: sc = ansi::blue();   break;
+        case AtmState::Stopped:     sc = ansi::grey();   break;
+        case AtmState::Idle:        sc = ansi::grey();   break;
+    }
+
     std::vector<std::string> L;
 
-    // 1. Шапка.
+    // === Полноширинная шапка ===
     {
         std::ostringstream os;
         os << C(ansi::bold()) << "ATM Simulator" << R()
-           << "   uptime " << hms(s.uptimeSeconds)
-           << "   [LIVE " << cfg_.ui.refreshHz << " fps]";
-        L.push_back(os.str());
+           << "   uptime " << hms(s.uptimeSeconds) << "   [LIVE " << cfg_.ui.refreshHz << " fps]";
+        L.push_back(fit(os.str(), width_));
     }
-
-    // 2. Состояние + касса (+ остаток ТО).
     {
-        const char* sc = ansi::cyan();
-        switch (s.state) {
-            case AtmState::Serving:     sc = ansi::green();  break;
-            case AtmState::Paused:      sc = ansi::yellow(); break;
-            case AtmState::Maintenance: sc = ansi::blue();   break;
-            case AtmState::Stopped:     sc = ansi::grey();   break;
-            case AtmState::Idle:        sc = ansi::grey();   break;
-        }
         std::ostringstream os;
         os << "Состояние: " << C(sc) << to_string(s.state) << R();
         if (s.state == AtmState::Maintenance) {
@@ -94,24 +163,20 @@ std::vector<std::string> LiveRenderer::composeLines() const {
             else os << "~" << static_cast<long>(s.maintenanceEtaSeconds) << "c";
             os << ")";
         }
-        os << "    Касса: " << (s.lowCash ? C(ansi::red()) : C(ansi::green()))
-           << formatMoney(s.cashboxBalance) << R() << ' ' << cur;
-        L.push_back(os.str());
-    }
-
-    // 3. Полоса кассы.
-    {
-        const double frac = (cfg_.atm.initialCash > 0)
+        const double cashFrac = (cfg_.atm.initialCash > 0)
             ? static_cast<double>(s.cashboxBalance) / static_cast<double>(cfg_.atm.initialCash) : 0.0;
-        std::ostringstream os;
-        os << "Касса  [" << (s.lowCash ? C(ansi::red()) : C(ansi::green())) << bar(frac, 20) << R() << ']';
-        L.push_back(os.str());
+        os << "   Касса [" << (s.lowCash ? C(ansi::red()) : C(ansi::green())) << bar(cashFrac, 16) << R()
+           << "] " << formatMoney(s.cashboxBalance) << ' ' << cur
+           << (s.lowCash ? std::string(" ") + C(ansi::red()) + "НИЗКАЯ" + R() : std::string{});
+        L.push_back(fit(os.str(), width_));
     }
 
-    // 4. Разделитель.
-    L.push_back(C(ansi::grey()) + sep() + R());
+    // === Разделитель с «шапкой» колонок (┬) ===
+    L.push_back(C(ansi::grey()) + repeatUtf8("─", leftW + 1) + "┬" +
+                repeatUtf8("─", width_ - leftW - 2) + R());
 
-    // 5. Кто обслуживается сейчас.
+    // === Левая колонка: кто обслуживается + очередь ===
+    std::vector<std::string> left;
     {
         std::ostringstream os;
         os << "Обслуживается: ";
@@ -119,88 +184,104 @@ std::vector<std::string> LiveRenderer::composeLines() const {
             os << C(ansi::cyan()) << '#' << *s.currentClientId << R() << ' '
                << to_string(*s.currentOperation);
         } else {
-            os << C(ansi::grey()) << "—" << R();
+            os << C(ansi::grey()) << "— (простой)" << R();
         }
-        L.push_back(os.str());
+        left.push_back(os.str());
     }
-
-    // 6. Разделитель.
-    L.push_back(C(ansi::grey()) + sep() + R());
-
-    // 7. Заголовок очереди.
+    left.push_back("");
     {
         std::ostringstream os;
-        os << "Очередь (" << s.queueLength << ")    макс. за прогон " << s.maxQueueLength;
-        L.push_back(os.str());
+        os << "Очередь (" << s.queueLength << ")   макс. " << s.maxQueueLength;
+        left.push_back(os.str());
     }
-
-    // 8..13. Строки очереди (ровно kQueueRows, пустые — пробелами).
-    for (int i = 0; i < kQueueRows; ++i) {
-        if (i < static_cast<int>(q.size())) {
-            const ClientSnapshot& c = q[static_cast<std::size_t>(i)];
-            const double total = c.waitedSeconds + c.remainingPatience;
-            const double frac = (total > 0.0) ? c.remainingPatience / total : 0.0;
-            const char* pc = (frac > 0.4) ? ansi::green() : (frac > 0.15) ? ansi::yellow() : ansi::red();
-            std::ostringstream os;
-            os << "  #" << c.id << ' ' << to_string(c.requestedOperation);
-            if (c.requestedOperation != OperationType::CheckBalance) os << ' ' << formatMoney(c.amount);
-            os << "   ждёт " << static_cast<long>(c.waitedSeconds) << "c   ["
-               << C(pc) << bar(frac, 8) << R() << "] " << static_cast<long>(c.remainingPatience) << "c";
-            L.push_back(os.str());
-        } else {
-            L.push_back(" ");
-        }
-    }
-
-    // 14. Индикатор «ещё N».
-    if (q.size() > static_cast<std::size_t>(kQueueRows)) {
-        L.push_back(C(ansi::grey()) + "  … ещё " + std::to_string(q.size() - kQueueRows) + R());
-    } else {
-        L.push_back(" ");
-    }
-
-    // 15. Разделитель.
-    L.push_back(C(ansi::grey()) + sep() + R());
-
-    // 16. Счётчики.
-    {
+    for (int i = 0; i < queueVisible; ++i) {
+        if (i >= static_cast<int>(q.size())) break;
+        const ClientSnapshot& c = q[static_cast<std::size_t>(i)];
+        const double total = c.waitedSeconds + c.remainingPatience;
+        const double frac = (total > 0.0) ? c.remainingPatience / total : 0.0;
+        const char* pc = (frac > 0.4) ? ansi::green() : (frac > 0.15) ? ansi::yellow() : ansi::red();
         std::ostringstream os;
-        os << "Обслужено " << s.totalServed << "    Ушли " << s.totalLeft;
-        L.push_back(os.str());
+        os << " #" << c.id << ' ' << to_string(c.requestedOperation);
+        const std::string amt = signedAmount(c.requestedOperation, c.amount);
+        if (!amt.empty()) os << ' ' << amt;
+        os << "  " << static_cast<long>(c.waitedSeconds) << "c ["
+           << C(pc) << bar(frac, 4) << R() << "] " << static_cast<long>(c.remainingPatience) << 'c';
+        left.push_back(os.str());
+    }
+    if (q.size() > static_cast<std::size_t>(queueVisible)) {
+        left.push_back(C(ansi::grey()) + " … ещё " + std::to_string(q.size() - queueVisible) +
+                       " (команда queue)" + R());
     }
 
-    // 17. Заголовок ленты.
-    L.push_back("Последние события:");
-
-    // 18..20. Лента (новые сверху; ровно kFeedRows строк).
+    // === Правая колонка: статистика + лента ===
+    std::vector<std::string> right;
+    right.push_back(C(ansi::bold()) + "СТАТИСТИКА" + R());
+    {
+        std::ostringstream os; os << " Обслужено:   " << st.served; right.push_back(os.str());
+    }
+    {
+        std::ostringstream os; os << " Ушли:        " << st.left << "  (ТО: " << st.renegedByMaintenance << ")";
+        right.push_back(os.str());
+    }
+    {
+        std::ostringstream os; os << std::fixed << std::setprecision(1)
+            << " Ожидание:    " << st.avgWaitSeconds << " c"; right.push_back(os.str());
+    }
+    {
+        std::ostringstream os; os << std::fixed << std::setprecision(1)
+            << " Обслуж.:     " << st.avgServiceSeconds << " c"; right.push_back(os.str());
+    }
+    {
+        std::ostringstream os; os << std::fixed << std::setprecision(2)
+            << " ρ = λ/μ:     " << st.rhoTheoretical
+            << (st.rhoTheoretical > 1.0 ? "  (перегруз)" : ""); right.push_back(os.str());
+    }
+    {
+        std::ostringstream os; os << std::fixed << std::setprecision(2)
+            << " Загрузка:    " << st.utilization; right.push_back(os.str());
+    }
+    right.push_back("");
+    right.push_back(C(ansi::bold()) + "ПОСЛЕДНИЕ ОПЕРАЦИИ" + R());
     for (int i = 0; i < kFeedRows; ++i) {
-        const int idx = static_cast<int>(ops.size()) - 1 - i;  // с конца (новые)
-        if (idx >= 0) {
-            const OperationRecord& r = ops[static_cast<std::size_t>(idx)];
-            std::ostringstream os;
-            os << "  #" << r.clientId << ' ' << to_string(r.type);
-            if (r.type != OperationType::CheckBalance) os << ' ' << formatMoney(r.amount);
-            if (r.success) os << ' ' << C(ansi::green()) << "OK" << R();
-            else os << ' ' << C(ansi::red()) << "FAIL " << r.errorMessage << R();
-            L.push_back(os.str());
-        } else {
-            L.push_back(" ");
-        }
+        const int idx = static_cast<int>(ops.size()) - 1 - i;  // новые сверху
+        if (idx < 0) { right.push_back(""); continue; }
+        const OperationRecord& r = ops[static_cast<std::size_t>(idx)];
+        std::ostringstream os;
+        os << " #" << r.clientId << ' ' << to_string(r.type);
+        const std::string amt = signedAmount(r.type, r.amount);
+        if (!amt.empty()) os << ' ' << amt;
+        if (r.success) os << "  " << C(ansi::green()) << "OK" << R();
+        else os << "  " << C(ansi::red()) << "FAIL " << r.errorMessage << R();
+        right.push_back(os.str());
     }
+
+    // === Склейка двух колонок построчно ===
+    const std::size_t bodyRows = std::max(left.size(), right.size());
+    for (std::size_t i = 0; i < bodyRows; ++i) {
+        const std::string lc = (i < left.size()) ? left[i] : std::string{};
+        const std::string rc = (i < right.size()) ? right[i] : std::string{};
+        L.push_back(fit(lc, leftW) + " " + C(ansi::grey()) + "│" + R() + " " + fit(rc, rightW));
+    }
+
+    // === Нижний разделитель (┴) + подсказка команд ===
+    L.push_back(C(ansi::grey()) + repeatUtf8("─", leftW + 1) + "┴" +
+                repeatUtf8("─", width_ - leftW - 2) + R());
+    L.push_back(fit(C(ansi::grey()) +
+                    "команды: pause · resume · maintenance N|stop · client N · queue · "
+                    "stats · export F · live off · stop" + R(), width_));
 
     return L;
 }
 
 void LiveRenderer::paintFrame() {
     const std::vector<std::string> lines = composeLines();
-    // Собираем весь кадр в одну строку и печатаем атомарно под локом вывода.
     std::string out = ansi::saveCursor();  // запомнить, где стоит курсор ввода
     for (std::size_t i = 0; i < lines.size(); ++i) {
-        out += ansi::moveTo(static_cast<int>(i) + 1, 1);  // абсолютная позиция строки
+        out += ansi::moveTo(static_cast<int>(i) + 1, 1);
         out += lines[i];
-        out += ansi::clearToLineEnd();  // затереть «хвост» прошлого кадра
+        out += ansi::clearToLineEnd();
     }
-    out += ansi::restoreCursor();  // вернуть курсор на строку ввода — её мы не трогали
+    out += ansi::restoreCursor();
 
     std::lock_guard<std::mutex> lock(outMutex_);
     std::cout << out << std::flush;
@@ -211,7 +292,6 @@ void LiveRenderer::renderLoop(std::stop_token stopToken) {
     const auto period = std::chrono::milliseconds(1000 / hz);
     while (!stopToken.stop_requested()) {
         if (!paused_.load()) paintFrame();
-        // Прерываемый сон: проснёмся раньше по запросу остановки (stop_token).
         std::unique_lock<std::mutex> lock(sleepMutex_);
         sleepCv_.wait_for(lock, stopToken, period, [] { return false; });
     }

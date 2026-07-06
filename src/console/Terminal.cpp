@@ -2,6 +2,8 @@
 
 // Платформенно-зависимая часть. Windows-ветка компилируется только на Windows;
 // на Linux (где идёт сборка/проверка) работает POSIX-ветка.
+#include <cstdlib>  // getenv / atoi — резервный источник размеров терминала
+
 #ifdef _WIN32
 #include <io.h>
 #include <windows.h>
@@ -11,6 +13,16 @@
 #endif
 
 namespace atmsim {
+namespace {
+// Резерв: если размер не удалось узнать у системы, пробуем переменные окружения.
+int envSize(const char* name) {
+    if (const char* v = std::getenv(name)) {
+        const int n = std::atoi(v);
+        if (n > 0) return n;
+    }
+    return 0;
+}
+}  // namespace
 
 bool Terminal::isStdoutTty() {
 #ifdef _WIN32
@@ -45,6 +57,7 @@ int Terminal::width() {
 #else
     struct winsize ws;
     if (::ioctl(STDOUT_FILENO, TIOCGWINSZ, &ws) == 0 && ws.ws_col > 0) return ws.ws_col;
+    if (const int e = envSize("COLUMNS")) return e;
     return 80;
 #endif
 }
@@ -59,6 +72,7 @@ int Terminal::height() {
 #else
     struct winsize ws;
     if (::ioctl(STDOUT_FILENO, TIOCGWINSZ, &ws) == 0 && ws.ws_row > 0) return ws.ws_row;
+    if (const int e = envSize("LINES")) return e;
     return 24;
 #endif
 }
