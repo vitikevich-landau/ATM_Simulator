@@ -14,15 +14,17 @@ set -e
 
 mkdir -p build
 
-FLAGS="-std=c++20 -O2 -Wall -Wextra -Wpedantic -pthread -Iinclude"
+# -isystem подавляет предупреждения из вендоренной библиотеки (third_party).
+FLAGS="-std=c++20 -O2 -Wall -Wextra -Wpedantic -pthread -Iinclude -isystem third_party"
 CORE="src/core/Money.cpp src/core/Types.cpp src/core/Account.cpp src/core/Cashbox.cpp src/core/Operation.cpp"
-TESTS="tests/test_main.cpp tests/test_money.cpp tests/test_account.cpp tests/test_cashbox.cpp tests/test_operation.cpp"
+CONFIG="src/config/ConfigLoader.cpp"
+TESTS="tests/test_main.cpp tests/test_money.cpp tests/test_account.cpp tests/test_cashbox.cpp tests/test_operation.cpp tests/test_config.cpp"
 
 echo "== build unit tests =="
-g++ $FLAGS -Itests $CORE $TESTS -o build/atmsim_tests
+g++ $FLAGS -Itests $CORE $CONFIG $TESTS -o build/atmsim_tests
 
 echo "== build atm_sim =="
-g++ $FLAGS src/main.cpp $CORE -o build/atm_sim
+g++ $FLAGS src/main.cpp $CORE $CONFIG -o build/atm_sim
 
 echo "== run unit tests =="
 ./build/atmsim_tests

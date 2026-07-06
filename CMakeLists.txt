@@ -73,10 +73,21 @@ add_library(atmsim_core
 target_include_directories(atmsim_core PUBLIC include)
 target_link_libraries(atmsim_core PUBLIC atmsim_flags)
 
+# --- Вендоренная библиотека nlohmann/json (single-header) ---------------------
+# Подключаем как INTERFACE-цель c SYSTEM-путём: SYSTEM подавляет предупреждения
+# из чужого кода, чтобы они не смешивались с нашими (-Wall -Wextra -Wpedantic).
+add_library(nlohmann_json INTERFACE)
+target_include_directories(nlohmann_json SYSTEM INTERFACE third_party)
+
+# --- Конфигурация (M2): загрузка и валидация JSON -----------------------------
+add_library(atmsim_config
+    src/config/ConfigLoader.cpp)
+target_link_libraries(atmsim_config PUBLIC atmsim_core PRIVATE nlohmann_json)
+
 # --- Исполняемый файл --------------------------------------------------------
 add_executable(atm_sim
     src/main.cpp)
-target_link_libraries(atm_sim PRIVATE atmsim_core)
+target_link_libraries(atm_sim PRIVATE atmsim_config)
 
 # --- Тесты -------------------------------------------------------------------
 # Пока используется минимальный собственный харнес (tests/simple_test.hpp) —
@@ -88,8 +99,9 @@ if(ATMSIM_BUILD_TESTS)
         tests/test_money.cpp
         tests/test_account.cpp
         tests/test_cashbox.cpp
-        tests/test_operation.cpp)
+        tests/test_operation.cpp
+        tests/test_config.cpp)
     target_include_directories(atmsim_tests PRIVATE tests)
-    target_link_libraries(atmsim_tests PRIVATE atmsim_core)
+    target_link_libraries(atmsim_tests PRIVATE atmsim_config)
     add_test(NAME unit COMMAND atmsim_tests)
 endif()
