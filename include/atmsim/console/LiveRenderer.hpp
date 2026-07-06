@@ -25,6 +25,9 @@
 
 namespace atmsim {
 
+/// \brief Живой дашборд: отдельный render-поток, который с частотой refresh_hz
+///        читает снимки движка и перерисовывает экран. Только чтение — состояние
+///        ядра не мутирует (§4.8).
 class LiveRenderer {
 public:
     LiveRenderer(AtmEngine& engine, const Config& cfg);

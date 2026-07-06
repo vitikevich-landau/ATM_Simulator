@@ -17,6 +17,7 @@ struct ConfigError : std::runtime_error {
     using std::runtime_error::runtime_error;
 };
 
+/// \brief Загрузчик конфигурации из JSON с валидацией значений.
 class ConfigLoader {
 public:
     // Читает файл целиком и разбирает его. Бросает ConfigError, если файла нет,

@@ -84,19 +84,26 @@ add_library(atmsim_config
     src/config/ConfigLoader.cpp)
 target_link_libraries(atmsim_config PUBLIC atmsim_core PRIVATE nlohmann_json)
 
+# --- Отчётность (M7): технический лог в файл ---------------------------------
+add_library(atmsim_reporting
+    src/reporting/Logger.cpp)
+target_include_directories(atmsim_reporting PUBLIC include)
+target_link_libraries(atmsim_reporting PUBLIC atmsim_flags)
+
 # --- Движок симуляции (M2 однопоточный + M3 многопоточный AtmEngine) ----------
 add_library(atmsim_engine
     src/engine/ServiceTimeProvider.cpp
     src/engine/ClientFactory.cpp
     src/engine/SimulationRunner.cpp
     src/engine/AtmEngine.cpp)
-target_link_libraries(atmsim_engine PUBLIC atmsim_config)
+target_link_libraries(atmsim_engine PUBLIC atmsim_config atmsim_reporting)
 
-# --- Консоль администратора (M3/M4 + M6: живой дашборд, терминал) -------------
+# --- Консоль администратора (M3/M4 + M6 дашборд + M7 сигналы) -----------------
 add_library(atmsim_console
     src/console/CommandParser.cpp
     src/console/Terminal.cpp
     src/console/LiveRenderer.cpp
+    src/console/Signals.cpp
     src/console/AdminConsole.cpp)
 target_link_libraries(atmsim_console PUBLIC atmsim_engine)
 
@@ -121,7 +128,8 @@ if(ATMSIM_BUILD_TESTS)
         tests/test_simulation.cpp
         tests/test_engine.cpp
         tests/test_parser.cpp
-        tests/test_renderer.cpp)
+        tests/test_renderer.cpp
+        tests/test_logger.cpp)
     target_include_directories(atmsim_tests PRIVATE tests)
     target_link_libraries(atmsim_tests PRIVATE atmsim_console)
     add_test(NAME unit COMMAND atmsim_tests)

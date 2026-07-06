@@ -10,13 +10,14 @@ namespace atmsim {
 
 using Clock = std::chrono::steady_clock;
 
-AtmEngine::AtmEngine(const Config& cfg)
+AtmEngine::AtmEngine(const Config& cfg, Logger* logger)
     : cfg_(cfg),
       cashbox_(cfg.atm.initialCash),
       serviceProvider_(makeServiceTimeProvider(cfg.serviceTime)),
       // Два независимых seed'а: разные потоки — разные движки (см. заголовок).
       serviceRng_(cfg.simulation.randomSeed),
-      arrivalRng_(cfg.simulation.randomSeed + 1u) {
+      arrivalRng_(cfg.simulation.randomSeed + 1u),
+      logger_(logger) {
     // По счёту на каждого будущего клиента (клиент i пользуется счётом i).
     accounts_.reserve(static_cast<std::size_t>(cfg.clients.count));
     for (int i = 0; i < cfg.clients.count; ++i) {
@@ -113,11 +114,13 @@ void AtmEngine::generateArrivals(std::stop_token stopToken) {
 //  ПОТОК ОБСЛУЖИВАНИЯ. Главный цикл банкомата.
 // ---------------------------------------------------------------------------
 void AtmEngine::run(std::stop_token stopToken) {
+    if (logger_) logger_->info("Поток обслуживания запущен");
     while (true) {
         Client client;
         bool haveClient = false;
         double serviceModelSec = 0.0;
         double waitedModel = 0.0;  // сколько клиент прождал (для статистики)
+        Money cashAfter = 0;       // касса после операции (для лога низкой кассы)
 
         // --- Фаза 1: дождаться работы и взять клиента (под эксклюзивным локом) ---
         {
@@ -224,6 +227,7 @@ void AtmEngine::run(std::stop_token stopToken) {
             sumWaitModel_ += waitedModel;
             sumServiceModel_ += serviceModelSec;
             busyModel_ += serviceModelSec;
+            cashAfter = cashbox_.balance();
             currentClient_.reset();
 
             // Если мы всё ещё в режиме Serving (проснулись по таймауту, штатно) —
@@ -234,8 +238,19 @@ void AtmEngine::run(std::stop_token stopToken) {
             }
         }
 
+        // Технический лог — ВНЕ критической секции (файловый I/O не держит mutex_).
+        if (logger_) {
+            logger_->debug("Обслужен клиент #" + std::to_string(client.id) +
+                           " (" + to_string(client.requestedOperation) + ")");
+            if (!lowCashLogged_ && cashAfter < cfg_.atm.lowCashThreshold) {
+                logger_->warn("Касса ниже порога инкассации: " + formatMoney(cashAfter));
+                lowCashLogged_ = true;
+            }
+        }
+
         if (state_.load() == AtmState::Stopped) break;
     }
+    if (logger_) logger_->info("Поток обслуживания завершён");
 }
 
 // ---------------------------------------------------------------------------
@@ -248,6 +263,7 @@ void AtmEngine::requestPause() {
         if (state_.load() != AtmState::Stopped) state_.store(AtmState::Paused);
     }
     wakeUp_.notify_all();
+    if (logger_) logger_->info("Команда: пауза");
 }
 
 void AtmEngine::requestResume() {
@@ -258,6 +274,7 @@ void AtmEngine::requestResume() {
         }
     }
     wakeUp_.notify_all();
+    if (logger_) logger_->info("Команда: возобновление");
 }
 
 void AtmEngine::requestStop() {
@@ -266,6 +283,7 @@ void AtmEngine::requestStop() {
         state_.store(AtmState::Stopped);
     }
     wakeUp_.notify_all();
+    if (logger_) logger_->info("Команда: остановка");
 }
 
 void AtmEngine::requestMaintenance(std::optional<int> durationSeconds) {
@@ -287,6 +305,7 @@ void AtmEngine::requestMaintenance(std::optional<int> durationSeconds) {
         maintenanceRenegePending_ = true;  // поток обслуживания применит уйти/остаться
     }
     wakeUp_.notify_all();
+    if (logger_) logger_->info("Команда: техобслуживание начато");
 }
 
 void AtmEngine::endMaintenance() {
@@ -297,6 +316,7 @@ void AtmEngine::endMaintenance() {
         }
     }
     wakeUp_.notify_all();
+    if (logger_) logger_->info("Команда: техобслуживание завершено");
 }
 
 void AtmEngine::applyMaintenanceRenegingLocked() {

@@ -20,8 +20,8 @@
 | **M3** | Многопоточность: `AtmEngine` в `jthread`, прерываемое ожидание (§6.2), консоль (`status`/`queue`/`pause`/`resume`/`stop`) | ✅ |
 | **M4** | Журнал операций + отчёты: `client`/`balance`/`operations`/`atm`/`stats`, `CommandParser`, `export` в CSV | ✅ |
 | **M5** | Режим техобслуживания: `maintenance start/stop`, логика «уйти/остаться» (§4.5), авто-завершение | ✅ |
-| **M6** | Живой дашборд (Live-режим, §4.8): render-поток, ANSI+цвет, деградация вне TTY, `TerminalBackend` | ✅ текущий |
-| **M7** | Логирование в файл, санитайзеры, документация, полировка | ⏳ |
+| **M6** | Живой дашборд (Live-режим, §4.8): render-поток, ANSI+цвет, деградация вне TTY, `TerminalBackend` | ✅ |
+| **M7** | Технический лог в файл, SIGINT/SIGTERM, итоговая статистика, санитайзеры ASan/UBSan | ✅ готово |
 
 ---
 
@@ -84,6 +84,31 @@ docker run --rm --security-opt seccomp=unconfined -v "$PWD":/work -w /work \
 > как только появится сеть. На результат симуляции это не влияет.
 
 ---
+
+## Проверки качества
+
+Все прогоны — в контейнере с GCC 14 (см. `scripts/`):
+
+```bash
+# сборка + 51 юнит/сценарный тест
+docker run --rm -v "$PWD":/work -w /work php:8.3-cli sh scripts/build_docker.sh
+
+# ThreadSanitizer — гонки данных в многопоточном ядре (§11, §14)
+docker run --rm --security-opt seccomp=unconfined -v "$PWD":/work -w /work \
+  php:8.3-cli sh scripts/tsan_docker.sh
+
+# Address + UB санитайзеры — порча памяти, утечки, неопределённое поведение
+docker run --rm --security-opt seccomp=unconfined -v "$PWD":/work -w /work \
+  php:8.3-cli sh scripts/asan_docker.sh
+```
+
+Ключевые гарантии (проверены тестами): инвариант сохранения денег держится под
+нагрузкой; `pause`/`stop` применяются мгновенно (§6.2); read-path дашборда не
+создаёт гонок; при перенаправлении вывода нет ANSI-кодов.
+
+Два независимых потока информации: **бизнес-журнал операций** (команда
+`operations`/`export`) и **технический лог** уровней DEBUG/INFO/WARN/ERROR в
+файл (`logging.file` в конфиге, §10).
 
 ## Структура репозитория
 

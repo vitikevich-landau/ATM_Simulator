@@ -30,12 +30,18 @@
 #include "atmsim/core/Client.hpp"
 #include "atmsim/engine/ServiceTimeProvider.hpp"
 #include "atmsim/engine/Snapshots.hpp"
+#include "atmsim/reporting/Logger.hpp"
 
 namespace atmsim {
 
+/// \brief Многопоточное ядро банкомата: поток обслуживания + поток прихода,
+///        потокобезопасные снимки для отчётов, прерываемое ожидание (§6.2).
+/// \note Всё изменяемое состояние мутирует только поток обслуживания (§6.1);
+///       читатели работают через const-снимки под shared_lock.
 class AtmEngine {
 public:
-    explicit AtmEngine(const Config& cfg);
+    // logger — необязательный технический лог (§10); nullptr = не логировать.
+    explicit AtmEngine(const Config& cfg, Logger* logger = nullptr);
 
     // --- Потоковые функции (каждая крутится в своём std::jthread) ------------
     void run(std::stop_token stopToken);              // цикл обслуживания
@@ -124,6 +130,9 @@ private:
 
     int generatedCount_{0};            // только поток прихода
     ClientId nextClientId_{1};         // только поток прихода
+
+    Logger* logger_{nullptr};          // технический лог (может быть nullptr)
+    bool lowCashLogged_{false};        // предупреждение о низкой кассе — один раз
 };
 
 }  // namespace atmsim
