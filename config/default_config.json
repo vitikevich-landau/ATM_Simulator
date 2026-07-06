@@ -8,7 +8,7 @@
     "arrival_mode": "poisson",
     "arrival_rate_per_minute": 4.0,
     "count": 50,
-    "initial_balance": 100000,
+    "initial_balance": 2500000,
     "operation_weights": {
       "check_balance": 0.3,
       "withdraw": 0.5,

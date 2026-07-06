@@ -106,6 +106,7 @@ private:
     std::mt19937_64 arrivalRng_;       // только поток прихода
 
     std::optional<Client> currentClient_;  // кого обслуживаем сейчас (защищён mutex_)
+    std::optional<OperationType> lastCashMove_;  // направление посл. движения кассы
     std::uint64_t totalServed_{0};
     std::uint64_t totalLeft_{0};              // всего ушли (терпение + ТО)
     std::uint64_t totalLeftMaintenance_{0};   // из них — ушли из-за ТО

@@ -165,8 +165,12 @@ std::vector<std::string> LiveRenderer::composeLines() const {
         }
         const double cashFrac = (cfg_.atm.initialCash > 0)
             ? static_cast<double>(s.cashboxBalance) / static_cast<double>(cfg_.atm.initialCash) : 0.0;
+        // Цвет ЧИСЛА кассы — по направлению последней операции: внесли -> зелёным,
+        // сняли -> красным (держится, пока направление не сменится). Полоса же
+        // показывает уровень заполнения (красная при низкой кассе).
+        const char* cashColor = (s.lastCashMove == OperationType::Withdraw) ? ansi::red() : ansi::green();
         os << "   Касса [" << (s.lowCash ? C(ansi::red()) : C(ansi::green())) << bar(cashFrac, 16) << R()
-           << "] " << formatMoney(s.cashboxBalance) << ' ' << cur
+           << "] " << C(cashColor) << formatMoney(s.cashboxBalance) << R() << ' ' << cur
            << (s.lowCash ? std::string(" ") + C(ansi::red()) + "НИЗКАЯ" + R() : std::string{});
         L.push_back(fit(os.str(), width_));
     }

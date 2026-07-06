@@ -209,6 +209,13 @@ void AtmEngine::run(std::stop_token stopToken) {
             const OperationOutcome outcome =
                 applyOperation(client.requestedOperation, client.amount, acct, cashbox_);
 
+            // Запоминаем направление последнего УСПЕШНОГО движения кассы —
+            // для подсветки суммы кассы на дашборде (зелёным/красным).
+            if (outcome.ok() && (client.requestedOperation == OperationType::Deposit ||
+                                 client.requestedOperation == OperationType::Withdraw)) {
+                lastCashMove_ = client.requestedOperation;
+            }
+
             // Запись в бизнес-журнал (§4.4): кто, что, когда, с каким исходом.
             OperationRecord rec;
             rec.id = nextOperationId_++;
@@ -360,6 +367,7 @@ AtmSnapshot AtmEngine::snapshot() const {
     s.uptimeSeconds =
         std::chrono::duration<double>(Clock::now() - startTime_).count() * cfg_.simulation.timeScale;
     s.lowCash = cashbox_.balance() < cfg_.atm.lowCashThreshold;
+    s.lastCashMove = lastCashMove_;
 
     // Остаток режима ТО (для status/atm/дашборда).
     if (state_.load() == AtmState::Maintenance) {
