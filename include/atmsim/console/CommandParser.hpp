@@ -26,6 +26,8 @@ enum class CommandType {
     Stats,
     Pause,
     Resume,
+    Live,              // live — войти в живой дашборд
+    LiveOff,           // live off — выйти в командный режим
     MaintenanceStart,  // maintenance start [сек]
     MaintenanceStop,   // maintenance stop
     Stop,        // stop / exit / quit

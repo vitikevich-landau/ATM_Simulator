@@ -19,11 +19,12 @@ FLAGS="-std=c++20 -O2 -Wall -Wextra -Wpedantic -pthread -Iinclude -isystem third
 CORE="src/core/Money.cpp src/core/Types.cpp src/core/Account.cpp src/core/Cashbox.cpp src/core/Operation.cpp"
 CONFIG="src/config/ConfigLoader.cpp"
 ENGINE="src/engine/ServiceTimeProvider.cpp src/engine/ClientFactory.cpp src/engine/SimulationRunner.cpp src/engine/AtmEngine.cpp"
-CONSOLE="src/console/CommandParser.cpp src/console/AdminConsole.cpp"
-TESTS="tests/test_main.cpp tests/test_money.cpp tests/test_account.cpp tests/test_cashbox.cpp tests/test_operation.cpp tests/test_config.cpp tests/test_service_time.cpp tests/test_simulation.cpp tests/test_engine.cpp tests/test_parser.cpp"
+CONSOLE="src/console/CommandParser.cpp src/console/Terminal.cpp src/console/LiveRenderer.cpp src/console/AdminConsole.cpp"
+TEST_CONSOLE="src/console/CommandParser.cpp src/console/LiveRenderer.cpp"
+TESTS="tests/test_main.cpp tests/test_money.cpp tests/test_account.cpp tests/test_cashbox.cpp tests/test_operation.cpp tests/test_config.cpp tests/test_service_time.cpp tests/test_simulation.cpp tests/test_engine.cpp tests/test_parser.cpp tests/test_renderer.cpp"
 
 echo "== build unit tests =="
-g++ $FLAGS -Itests $CORE $CONFIG $ENGINE src/console/CommandParser.cpp $TESTS -o build/atmsim_tests
+g++ $FLAGS -Itests $CORE $CONFIG $ENGINE $TEST_CONSOLE $TESTS -o build/atmsim_tests
 
 echo "== build atm_sim =="
 g++ $FLAGS src/main.cpp $CORE $CONFIG $ENGINE $CONSOLE -o build/atm_sim

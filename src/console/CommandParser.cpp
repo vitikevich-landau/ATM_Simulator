@@ -59,6 +59,9 @@ Command parseCommand(const std::string& line) {
         c.type = CommandType::Pause;
     } else if (cmd == "resume") {
         c.type = CommandType::Resume;
+    } else if (cmd == "live") {
+        // "live" — войти в дашборд; "live off" — выйти в командный режим.
+        c.type = (tok.size() >= 2 && tok[1] == "off") ? CommandType::LiveOff : CommandType::Live;
     } else if (cmd == "maintenance") {
         if (tok.size() < 2) {
             c.error = "нужно: maintenance start [сек] | maintenance stop";

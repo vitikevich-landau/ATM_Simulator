@@ -87,3 +87,8 @@ TEST(parser_maintenance_errors) {
     CHECK(!parseCommand("maintenance frob").error.empty());   // не start/stop
     CHECK(!parseCommand("maintenance start abc").error.empty()); // длительность не число
 }
+
+TEST(parser_live) {
+    CHECK(parseCommand("live").type == CommandType::Live);
+    CHECK(parseCommand("live off").type == CommandType::LiveOff);
+}

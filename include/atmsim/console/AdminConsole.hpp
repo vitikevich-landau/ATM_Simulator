@@ -1,16 +1,19 @@
 #pragma once
 // ============================================================================
-//  AdminConsole.hpp — интерактивная консоль администратора (M4).
+//  AdminConsole.hpp — консоль администратора (M6): командный режим + живой дашборд.
 //
-//  Работает в ГЛАВНОМ потоке: читает строки из stdin, разбирает их через
-//  CommandParser и вызывает методы AtmEngine (снимки/отчёты для чтения,
-//  requestX для управления). Пока это pull-модель «команда -> ответ» (§8);
-//  живой дашборд (§4.8) — в M6.
+//  Два режима (§4.8.1):
+//    * command — классический REPL «команда -> ответ» (§8);
+//    * live    — полноэкранный дашборд, автообновление (§4.8), ввод команд внизу.
+//  Стартовый режим — из конфига (ui.live_mode), но live доступен ТОЛЬКО если
+//  stdout — интерактивный терминал; иначе (пайп/файл) — командный режим (§4.8.7).
 // ============================================================================
+#include <functional>
 #include <string>
 
 #include "atmsim/config/Config.hpp"
 #include "atmsim/console/CommandParser.hpp"
+#include "atmsim/console/LiveRenderer.hpp"
 #include "atmsim/engine/AtmEngine.hpp"
 
 namespace atmsim {
@@ -19,10 +22,18 @@ class AdminConsole {
 public:
     AdminConsole(AtmEngine& engine, const Config& cfg);
 
-    // Главный цикл ввода команд. Возвращается по команде stop/exit/quit или EOF.
+    // Главный цикл: переключается между командным и живым режимами, пока не stop/EOF.
     void run();
 
 private:
+    // Что делать после выхода из одного из режимов.
+    enum class Next { Command, Live, Quit };
+
+    Next runCommandLoop();   // pull-REPL; -> Live (по live) или Quit
+    Next runLiveSession();   // живой дашборд; -> Command (по live off) или Quit
+
+    // Печать отчётов (пишут в std::cout). Разделены, чтобы переиспользоваться и в
+    // командном режиме, и как «полноэкранный ответ» (overlay) в живом режиме.
     void printHelp() const;
     void printStatus() const;
     void printQueue() const;
@@ -33,8 +44,17 @@ private:
     void printStats() const;
     void doExport(const std::string& filename) const;
 
+    // Выполняет команду-отчёт/справку (печать в cout). true — если это была
+    // именно отчётная команда (иначе — управляющая, обрабатывается отдельно).
+    bool dispatchReport(const Command& c) const;
+
+    // В живом режиме показывает результат разовой команды поверх дашборда:
+    // приостанавливает рендер, печатает, ждёт Enter, восстанавливает дашборд.
+    void showOverlay(LiveRenderer& renderer, const std::function<void()>& printFn);
+
     AtmEngine& engine_;
     Config cfg_;
+    bool ttyAnsi_{false};  // stdout — интерактивный терминал (можно live-режим)
 };
 
 }  // namespace atmsim

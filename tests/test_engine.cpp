@@ -1,3 +1,4 @@
+#include <atomic>
 #include <chrono>
 #include <cstdint>
 #include <optional>
@@ -158,6 +159,49 @@ TEST(engine_operations_filter_by_type) {
     for (const auto& r : engine.operations(f)) {
         CHECK(r.type == OperationType::Withdraw);
     }
+}
+
+// Отдельный поток-читатель (как render-поток дашборда) параллельно дёргает
+// ВСЕ snapshot-методы, пока идёт обслуживание. Ценность теста — под TSan:
+// путь чтения рендерера не должен создавать гонок данных (§4.8, §14).
+TEST(engine_concurrent_readers_are_race_free) {
+    const int count = 30;
+    Config cfg = fastConfig(count, 1000.0);
+    AtmEngine engine(cfg);
+
+    std::jthread eng([&](std::stop_token st) { engine.run(st); });
+    std::jthread arr([&](std::stop_token st) { engine.generateArrivals(st); });
+
+    std::atomic<bool> stopReader{false};
+    std::thread reader([&] {
+        while (!stopReader.load()) {
+            const auto s = engine.snapshot();
+            const auto q = engine.queueSnapshot();
+            const auto st = engine.statsSnapshot();
+            const auto ops = engine.operations(OperationFilter{});
+            const auto rep = engine.clientReport(1);
+            (void)s; (void)q; (void)st; (void)ops; (void)rep;
+        }
+    });
+
+    const auto deadline = std::chrono::steady_clock::now() + 10s;
+    while (std::chrono::steady_clock::now() < deadline) {
+        const auto s = engine.snapshot();
+        if (s.totalServed + s.totalLeft >= static_cast<std::uint64_t>(count) &&
+            s.queueLength == 0 && !s.currentClientId) {
+            break;
+        }
+        std::this_thread::sleep_for(2ms);
+    }
+
+    stopReader.store(true);
+    reader.join();
+    engine.requestStop();
+    eng.request_stop();
+    arr.request_stop();
+    eng.join();
+    arr.join();
+    CHECK(true);  // главный результат — чистый прогон под ThreadSanitizer
 }
 
 // maintenance start переводит в Maintenance, maintenance stop — обратно.
