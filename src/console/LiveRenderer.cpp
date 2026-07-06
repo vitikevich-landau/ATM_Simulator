@@ -291,26 +291,31 @@ void LiveRenderer::paintFrame() {
     std::cout << out << std::flush;
 }
 
-void LiveRenderer::renderLoop(std::stop_token stopToken) {
+void LiveRenderer::renderLoop() {
     const int hz = (cfg_.ui.refreshHz > 0) ? cfg_.ui.refreshHz : 4;
     const auto period = std::chrono::milliseconds(1000 / hz);
-    while (!stopToken.stop_requested()) {
+    while (running_.load()) {
         if (!paused_.load()) paintFrame();
+        // Прерываемый сон: проснёмся раньше по stop() (running_ станет false).
         std::unique_lock<std::mutex> lock(sleepMutex_);
-        sleepCv_.wait_for(lock, stopToken, period, [] { return false; });
+        sleepCv_.wait_for(lock, period, [this] { return !running_.load(); });
     }
 }
 
 void LiveRenderer::start() {
-    thread_ = std::jthread([this](std::stop_token st) { renderLoop(st); });
+    if (thread_.joinable()) return;  // уже запущен
+    running_.store(true);
+    thread_ = std::thread([this] { renderLoop(); });
 }
 
 void LiveRenderer::stop() {
-    if (thread_.joinable()) {
-        thread_.request_stop();
-        sleepCv_.notify_all();
-        thread_.join();
-    }
+    running_.store(false);
+    sleepCv_.notify_all();  // разбудить render-поток из сна
+    if (thread_.joinable()) thread_.join();
+}
+
+LiveRenderer::~LiveRenderer() {
+    stop();  // RAII: поток гарантированно остановлен и присоединён к моменту разрушения
 }
 
 void LiveRenderer::pause() { paused_.store(true); }

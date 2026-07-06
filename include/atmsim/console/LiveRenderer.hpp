@@ -31,9 +31,13 @@ namespace atmsim {
 class LiveRenderer {
 public:
     LiveRenderer(AtmEngine& engine, const Config& cfg);
+    ~LiveRenderer();  // гарантированно останавливает render-поток (RAII)
+
+    LiveRenderer(const LiveRenderer&) = delete;             // не копируется/не перемещается —
+    LiveRenderer& operator=(const LiveRenderer&) = delete;  // владеет потоком и мьютексами
 
     void start();   // запустить render-поток
-    void stop();    // остановить и присоединить
+    void stop();    // остановить и присоединить (идемпотентно)
     void pause();   // приостановить перерисовку (для полноэкранных ответов)
     void resume();  // возобновить перерисовку
 
@@ -49,18 +53,23 @@ public:
     std::vector<std::string> composeLines() const;
 
 private:
-    void renderLoop(std::stop_token stopToken);
+    void renderLoop();
     void paintFrame();
 
     AtmEngine& engine_;
     Config cfg_;
 
-    std::jthread thread_;
+    // Простая и портируемая модель потока: обычный std::thread + флаг running_ +
+    // обычная condition_variable для прерываемого сна. Намеренно БЕЗ jthread/
+    // stop_token/condition_variable_any — чтобы не зависеть от их поведения на
+    // конкретной платформе (у рендерера это лишнее; ядро §6.2 живёт отдельно).
+    std::thread thread_;
+    std::atomic<bool> running_{false};
     std::atomic<bool> paused_{false};
 
     std::mutex outMutex_;              // сериализация вывода в stdout
     std::mutex sleepMutex_;            // для прерываемого сна render-цикла
-    std::condition_variable_any sleepCv_;
+    std::condition_variable sleepCv_;
 
     // Размеры терминала читаем один раз при создании (обработку ресайза на лету
     // оставляем на v2). По ним подстраиваем ширину колонок и число строк очереди.
