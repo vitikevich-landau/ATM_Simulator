@@ -6,13 +6,14 @@
 #      std::condition_variable_any (см. §6.2 ТЗ: «прерываемое ожидание»).
 #    * Заводим ОДНУ интерфейсную цель `atmsim_flags` с флагами предупреждений и
 #      потоками — и подключаем её ко всем таргетам, чтобы флаги не дублировать.
-#    * Пока в проекте только исполняемый файл `atm_sim` с точкой входа.
-#      По мере роста (M1+) сюда добавятся библиотеки core/engine/console и тесты.
+#    * Доменное ядро вынесено в библиотеку `atmsim_core` (M1). На неё опираются
+#      и исполняемый файл `atm_sim`, и тесты `atmsim_tests`.
 #
 #  Локальная сборка на машине разработчика:
 #      cmake -S . -B build
 #      cmake --build build
 #      ./build/atm_sim            (Linux)   |   build\Debug\atm_sim.exe (MSVC)
+#      ctest --test-dir build     (запуск юнит-тестов)
 # ============================================================================
 
 cmake_minimum_required(VERSION 3.20)
@@ -36,6 +37,7 @@ endif()
 
 # --- Опции проекта -----------------------------------------------------------
 option(ATMSIM_WARNINGS_AS_ERRORS "Считать предупреждения ошибками" OFF)
+option(ATMSIM_BUILD_TESTS        "Собирать юнит-тесты"             ON)
 
 # --- Общая интерфейсная цель с флагами ---------------------------------------
 # INTERFACE-библиотека не компилируется сама, а «раздаёт» свои свойства тем,
@@ -59,10 +61,35 @@ else()
     endif()
 endif()
 
+# --- Доменное ядро (M1): деньги, счёт, касса, операция ------------------------
+# Библиотека без потоков и без внешних зависимостей — её легко покрывать тестами.
+add_library(atmsim_core
+    src/core/Money.cpp
+    src/core/Types.cpp
+    src/core/Account.cpp
+    src/core/Cashbox.cpp
+    src/core/Operation.cpp)
+# PUBLIC include — все, кто линкует ядро, автоматически видят заголовки atmsim/.
+target_include_directories(atmsim_core PUBLIC include)
+target_link_libraries(atmsim_core PUBLIC atmsim_flags)
+
 # --- Исполняемый файл --------------------------------------------------------
-# Пока это только точка входа. Доменное ядро приедет в M1 отдельной библиотекой.
 add_executable(atm_sim
     src/main.cpp)
+target_link_libraries(atm_sim PRIVATE atmsim_core)
 
-target_include_directories(atm_sim PRIVATE include)
-target_link_libraries(atm_sim PRIVATE atmsim_flags)
+# --- Тесты -------------------------------------------------------------------
+# Пока используется минимальный собственный харнес (tests/simple_test.hpp) —
+# см. примечание в README. Когда появится сеть, заменим на GoogleTest.
+if(ATMSIM_BUILD_TESTS)
+    enable_testing()
+    add_executable(atmsim_tests
+        tests/test_main.cpp
+        tests/test_money.cpp
+        tests/test_account.cpp
+        tests/test_cashbox.cpp
+        tests/test_operation.cpp)
+    target_include_directories(atmsim_tests PRIVATE tests)
+    target_link_libraries(atmsim_tests PRIVATE atmsim_core)
+    add_test(NAME unit COMMAND atmsim_tests)
+endif()
