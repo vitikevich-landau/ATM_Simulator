@@ -8,7 +8,6 @@
 
 #include <iomanip>
 #include <iostream>
-#include <stop_token>
 #include <string>
 #include <thread>
 
@@ -39,8 +38,11 @@ int main(int argc, char** argv) {
         AtmEngine engine(cfg, &logger);
         installSignalHandlers();  // SIGINT/SIGTERM -> плавная остановка (§4.6)
 
-        std::jthread engineThread([&engine](std::stop_token st) { engine.run(st); });
-        std::jthread arrivalThread([&engine](std::stop_token st) { engine.generateArrivals(st); });
+        // Обычные std::thread (не jthread): останавливаем явно через
+        // engine.requestStop() перед join(). Причина отказа от jthread/stop_token —
+        // несовместимость связки со stop_token на ряде версий MSVC (см. AtmEngine.hpp).
+        std::thread engineThread([&engine] { engine.run(); });
+        std::thread arrivalThread([&engine] { engine.generateArrivals(); });
 
         AdminConsole console(engine, cfg);
         console.run();  // блокирует до stop/EOF/сигнала
@@ -50,9 +52,7 @@ int main(int argc, char** argv) {
             std::cout << "\n(получен сигнал остановки — завершаюсь плавно)\n";
         }
 
-        engine.requestStop();
-        engineThread.request_stop();
-        arrivalThread.request_stop();
+        engine.requestStop();  // переводит потоки в Stopped и будит их
         engineThread.join();
         arrivalThread.join();
 

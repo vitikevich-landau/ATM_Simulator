@@ -1,8 +1,7 @@
 #include "atmsim/engine/AtmEngine.hpp"
 
 #include <chrono>
-#include <mutex>       // std::unique_lock
-#include <shared_mutex>
+#include <mutex>  // std::unique_lock, std::lock_guard
 
 #include "atmsim/core/Operation.hpp"
 
@@ -66,27 +65,15 @@ Client AtmEngine::makeClient() {
 //  кладёт в очередь и будит поток обслуживания. Останавливается, когда все
 //  cfg.clients.count клиентов сгенерированы или пришёл сигнал остановки.
 // ---------------------------------------------------------------------------
-void AtmEngine::generateArrivals(std::stop_token stopToken) {
-    // Пробуждение при запросе остановки — через stop_callback (см. комментарий
-    // к wakeUp_ в заголовке: stop_token-перегрузки cv_any не используем из-за MSVC).
-    //
-    // КРИТИЧНО: перед notify_all() захватываем и отпускаем mutex_. Без этого
-    // возможно потерянное пробуждение: ожидающий проверил предикат (стоп ещё не
-    // запрошен) под mutex_, но ещё не заблокировался на cv — notify, пришедший
-    // в это окно, будит ноль потоков, и ожидающий засыпает навсегда. Захват
-    // mutex_ упорядочивает callback относительно проверки предиката: либо
-    // предикат уже видит stop_requested(), либо ожидающий гарантированно успел
-    // заблокироваться до notify. (Штатные stop_token-перегрузки cv_any решают
-    // это внутренним мьютексом — мы воспроизводим тот же приём вручную.)
-    std::stop_callback wakeOnStop(stopToken, [this] {
-        { std::unique_lock<std::shared_mutex> lk(mutex_); }
-        wakeUp_.notify_all();
-    });
-
+void AtmEngine::generateArrivals() {
+    // Остановка — через requestStop() (state_ == Stopped): он под mutex_ меняет
+    // состояние и делает notify_all(), а предикаты ожиданий ниже проверяют
+    // state_ == Stopped. Это канонический паттерн condition_variable без потери
+    // пробуждений. Никаких stop_token/stop_callback/cv_any (несовместимо с MSVC).
     const double meanGapSec = 60.0 / cfg_.clients.arrivalRatePerMinute;
     std::exponential_distribution<double> gapDist(1.0 / meanGapSec);
 
-    while (!stopToken.stop_requested() && generatedCount_ < cfg_.clients.count) {
+    while (state_.load() != AtmState::Stopped && generatedCount_ < cfg_.clients.count) {
         // Интервал до следующего прихода. Первый клиент приходит сразу (gap = 0),
         // дальше — по модели: poisson => случайный интервал, batch => постоянный.
         const double gapModel =
@@ -96,34 +83,32 @@ void AtmEngine::generateArrivals(std::stop_token stopToken) {
         const std::chrono::duration<double> realWait(gapModel / cfg_.simulation.timeScale);
 
         {
-            // Прерываемое ожидание интервала: проснёмся раньше, если остановка.
-            // Стоп проверяется предикатом (stop_requested), пробуждение обеспечивает
-            // stop_callback выше — без stop_token-перегрузок cv_any (MSVC).
-            std::unique_lock<std::shared_mutex> lock(mutex_);
-            wakeUp_.wait_for(lock, realWait, [this, &stopToken] {
-                return state_.load() == AtmState::Stopped || stopToken.stop_requested();
+            // Прерываемое ожидание интервала: проснёмся раньше при остановке.
+            std::unique_lock<std::mutex> lock(mutex_);
+            wakeUp_.wait_for(lock, realWait, [this] {
+                return state_.load() == AtmState::Stopped;
             });
-            if (stopToken.stop_requested() || state_.load() == AtmState::Stopped) return;
+            if (state_.load() == AtmState::Stopped) return;
         }
 
         // Если по конфигу приход НЕ продолжается во время ТО (§4.5 п.4) — ждём
         // окончания ТО, прежде чем впускать нового клиента. По умолчанию приход
         // продолжается (люди подходят и видят, что банкомат недоступен).
         if (!cfg_.maintenance.arrivalsContinue) {
-            std::unique_lock<std::shared_mutex> lock(mutex_);
-            wakeUp_.wait(lock, [this, &stopToken] {
-                return state_.load() != AtmState::Maintenance || stopToken.stop_requested();
+            std::unique_lock<std::mutex> lock(mutex_);
+            wakeUp_.wait(lock, [this] {
+                return state_.load() != AtmState::Maintenance;  // Stopped тоже != Maintenance
             });
-            if (stopToken.stop_requested() || state_.load() == AtmState::Stopped) return;
+            if (state_.load() == AtmState::Stopped) return;
         }
 
         Client c = makeClient();  // трогает только arrivalRng_/счётчики этого потока
 
         {
-            std::unique_lock<std::shared_mutex> lock(mutex_);
+            std::unique_lock<std::mutex> lock(mutex_);
             // Стоп мог прийти, пока мы создавали клиента (между локами) — тогда
             // не добавляем его: «висящий» Waiting-клиент исказил бы итоговые счётчики.
-            if (stopToken.stop_requested() || state_.load() == AtmState::Stopped) return;
+            if (state_.load() == AtmState::Stopped) return;
             queue_.push_back(c);
             roster_.push_back(c);  // реестр всех клиентов (roster_[id-1])
             if (queue_.size() > maxQueueLen_) maxQueueLen_ = queue_.size();
@@ -137,20 +122,11 @@ void AtmEngine::generateArrivals(std::stop_token stopToken) {
 // ---------------------------------------------------------------------------
 //  ПОТОК ОБСЛУЖИВАНИЯ. Главный цикл банкомата.
 // ---------------------------------------------------------------------------
-void AtmEngine::run(std::stop_token stopToken) {
+void AtmEngine::run() {
     if (logger_) logger_->info("Поток обслуживания запущен");
 
-    // Пробуждение при запросе остановки (например, из деструктора jthread):
-    // callback будит wakeUp_, а предикаты ожиданий ниже явно проверяют
-    // stopToken.stop_requested(). stop_token-перегрузки cv_any не используем —
-    // на ряде версий MSVC STL они падают в рантайме (см. заголовок).
-    // Захват/отпускание mutex_ перед notify обязательны — защита от потерянного
-    // пробуждения (подробный разбор — в generateArrivals выше по файлу).
-    std::stop_callback wakeOnStop(stopToken, [this] {
-        { std::unique_lock<std::shared_mutex> lk(mutex_); }
-        wakeUp_.notify_all();
-    });
-
+    // Остановка — через requestStop() (state_ == Stopped), см. комментарий к
+    // wakeUp_ в заголовке. Все предикаты ожиданий ниже проверяют state_.
     while (true) {
         Client client;
         bool haveClient = false;
@@ -160,7 +136,7 @@ void AtmEngine::run(std::stop_token stopToken) {
 
         // --- Фаза 1: дождаться работы и взять клиента (под эксклюзивным локом) ---
         {
-            std::unique_lock<std::shared_mutex> lock(mutex_);
+            std::unique_lock<std::mutex> lock(mutex_);
 
             // РЕЖИМ ТО (§4.5). Обрабатываем отдельно: новых клиентов не берём,
             // ждём конца ТО (по таймеру или по команде maintenance stop).
@@ -171,22 +147,19 @@ void AtmEngine::run(std::stop_token stopToken) {
                     maintenanceRenegePending_ = false;
                 }
                 // Ждём: наступит дедлайн ТО, ЛИБО сменится режим (maintenance stop /
-                // stop / запрос остановки), смотря что раньше. Для «бессрочного» ТО
-                // (deadline == max) ждём без таймаута: wait_until с time_point::max()
-                // на некоторых реализациях переполняется.
-                const auto maintenanceOver = [this, &stopToken] {
-                    return state_.load() != AtmState::Maintenance || stopToken.stop_requested();
+                // stop), смотря что раньше. Для «бессрочного» ТО (deadline == max)
+                // ждём без таймаута: wait_until с time_point::max() на некоторых
+                // реализациях переполняется.
+                const auto maintenanceOver = [this] {
+                    return state_.load() != AtmState::Maintenance;  // Stopped тоже подходит
                 };
                 if (maintenanceDeadline_ == Clock::time_point::max()) {
                     wakeUp_.wait(lock, maintenanceOver);
                 } else {
                     wakeUp_.wait_until(lock, maintenanceDeadline_, maintenanceOver);
                 }
-                // Запрос остановки во время ТО: выходим из цикла СРАЗУ. Без этого
-                // при «голом» request_stop() (state_ остаётся Maintenance) wait
-                // мгновенно возвращается по stop_requested, continue снова ведёт в
-                // эту же ветку — и поток крутится в горячем цикле, а join() виснет.
-                if (stopToken.stop_requested()) break;
+                // Остановка во время ТО: выходим из цикла (иначе продолжали бы ждать ТО).
+                if (state_.load() == AtmState::Stopped) break;
                 // Если всё ещё ТО и время вышло — авто-завершение.
                 if (state_.load() == AtmState::Maintenance && Clock::now() >= maintenanceDeadline_) {
                     state_.store(queue_.empty() ? AtmState::Idle : AtmState::Serving);
@@ -202,8 +175,7 @@ void AtmEngine::run(std::stop_token stopToken) {
             // «Спим с условием»: просыпаемся, когда есть кого обслуживать в рабочем
             // режиме, ЛИБО пришла остановка, ЛИБО сменился режим (пауза/ТО). На
             // паузе предикат ложен — значит продолжаем спать, не крутя цикл впустую.
-            wakeUp_.wait(lock, [this, &stopToken] {
-                if (stopToken.stop_requested()) return true;
+            wakeUp_.wait(lock, [this] {
                 const AtmState s = state_.load();
                 if (s == AtmState::Stopped) return true;
                 if (s == AtmState::Maintenance) return true;  // выйти -> обработать ТО сверху
@@ -211,7 +183,7 @@ void AtmEngine::run(std::stop_token stopToken) {
                 return !queue_.empty();
             });
 
-            if (stopToken.stop_requested() || state_.load() == AtmState::Stopped) break;
+            if (state_.load() == AtmState::Stopped) break;
             if (state_.load() == AtmState::Maintenance) continue;  // на след. круге — ветка ТО
             if (state_.load() == AtmState::Paused || queue_.empty()) continue;
 
@@ -246,17 +218,16 @@ void AtmEngine::run(std::stop_token stopToken) {
 
         // --- Фаза 2: обслуживание (ПРЕРЫВАЕМОЕ ОЖИДАНИЕ) — сердце §6.2 ---------
         {
-            std::unique_lock<std::shared_mutex> lock(mutex_);
+            std::unique_lock<std::mutex> lock(mutex_);
 
             // Вместо «слепого» sleep_for(realDuration) ждём по условию: проснёмся
             // либо когда истечёт realDuration (клиент обслужен штатно), либо когда
-            // сменится режим (пауза/стоп через state_ + notify_all), либо по
-            // запросу остановки (stop_callback будит, предикат видит) — СМОТРЯ ЧТО
+            // сменится режим (пауза/стоп через state_ + notify_all) — СМОТРЯ ЧТО
             // НАСТУПИТ РАНЬШЕ. Благодаря этому pause/stop применяются мгновенно,
             // не дожидаясь конца случайной задержки (§5, §14). Пока идёт это
             // ожидание, лок ОТПУЩЕН — читатели-снимки не блокируются.
-            wakeUp_.wait_for(lock, realDuration, [this, &stopToken] {
-                return state_.load() != AtmState::Serving || stopToken.stop_requested();
+            wakeUp_.wait_for(lock, realDuration, [this] {
+                return state_.load() != AtmState::Serving;  // Stopped тоже != Serving
             });
 
             // Операцию доводим до конца в любом случае (§4.6 по умолчанию —
@@ -323,7 +294,7 @@ void AtmEngine::run(std::stop_token stopToken) {
 // ---------------------------------------------------------------------------
 void AtmEngine::requestPause() {
     {
-        std::unique_lock<std::shared_mutex> lock(mutex_);
+        std::unique_lock<std::mutex> lock(mutex_);
         if (state_.load() != AtmState::Stopped) state_.store(AtmState::Paused);
     }
     wakeUp_.notify_all();
@@ -332,7 +303,7 @@ void AtmEngine::requestPause() {
 
 void AtmEngine::requestResume() {
     {
-        std::unique_lock<std::shared_mutex> lock(mutex_);
+        std::unique_lock<std::mutex> lock(mutex_);
         if (state_.load() == AtmState::Paused) {
             state_.store(queue_.empty() ? AtmState::Idle : AtmState::Serving);
         }
@@ -343,7 +314,7 @@ void AtmEngine::requestResume() {
 
 void AtmEngine::requestStop() {
     {
-        std::unique_lock<std::shared_mutex> lock(mutex_);
+        std::unique_lock<std::mutex> lock(mutex_);
         state_.store(AtmState::Stopped);
     }
     wakeUp_.notify_all();
@@ -352,7 +323,7 @@ void AtmEngine::requestStop() {
 
 void AtmEngine::requestMaintenance(std::optional<int> durationSeconds) {
     {
-        std::unique_lock<std::shared_mutex> lock(mutex_);
+        std::unique_lock<std::mutex> lock(mutex_);
         if (state_.load() == AtmState::Stopped) return;
 
         // Длительность (в МОДЕЛЬНЫХ секундах): явная из аргумента, иначе из конфига.
@@ -374,7 +345,7 @@ void AtmEngine::requestMaintenance(std::optional<int> durationSeconds) {
 
 void AtmEngine::endMaintenance() {
     {
-        std::unique_lock<std::shared_mutex> lock(mutex_);
+        std::unique_lock<std::mutex> lock(mutex_);
         if (state_.load() == AtmState::Maintenance) {
             state_.store(queue_.empty() ? AtmState::Idle : AtmState::Serving);
         }
@@ -409,7 +380,7 @@ void AtmEngine::applyMaintenanceRenegingLocked() {
 //  писателю дольше, чем нужно на копирование небольшого объёма данных.
 // ---------------------------------------------------------------------------
 AtmSnapshot AtmEngine::snapshot() const {
-    std::shared_lock<std::shared_mutex> lock(mutex_);
+    std::lock_guard<std::mutex> lock(mutex_);
     AtmSnapshot s;
     s.state = state_.load();
     s.cashboxBalance = cashbox_.balance();
@@ -440,7 +411,7 @@ AtmSnapshot AtmEngine::snapshot() const {
 }
 
 std::vector<ClientSnapshot> AtmEngine::queueSnapshot() const {
-    std::shared_lock<std::shared_mutex> lock(mutex_);
+    std::lock_guard<std::mutex> lock(mutex_);
     std::vector<ClientSnapshot> out;
     out.reserve(queue_.size());
     for (const auto& c : queue_) {
@@ -457,14 +428,14 @@ std::vector<ClientSnapshot> AtmEngine::queueSnapshot() const {
 }
 
 Money AtmEngine::accountsTotal() const {
-    std::shared_lock<std::shared_mutex> lock(mutex_);
+    std::lock_guard<std::mutex> lock(mutex_);
     Money total = 0;
     for (const auto& a : accounts_) total += a.balance();
     return total;
 }
 
 StatsSnapshot AtmEngine::statsSnapshot() const {
-    std::shared_lock<std::shared_mutex> lock(mutex_);
+    std::lock_guard<std::mutex> lock(mutex_);
     StatsSnapshot s;
     s.served = totalServed_;
     s.left = totalLeft_;
@@ -486,7 +457,7 @@ StatsSnapshot AtmEngine::statsSnapshot() const {
 }
 
 std::optional<ClientReport> AtmEngine::clientReport(ClientId id) const {
-    std::shared_lock<std::shared_mutex> lock(mutex_);
+    std::lock_guard<std::mutex> lock(mutex_);
     if (id == 0 || id > roster_.size()) return std::nullopt;
     const Client& c = roster_[static_cast<std::size_t>(id - 1)];
     ClientReport r;
@@ -503,14 +474,14 @@ std::optional<ClientReport> AtmEngine::clientReport(ClientId id) const {
 }
 
 std::optional<Money> AtmEngine::balanceOf(ClientId id) const {
-    std::shared_lock<std::shared_mutex> lock(mutex_);
+    std::lock_guard<std::mutex> lock(mutex_);
     if (id == 0 || id > roster_.size()) return std::nullopt;
     const Client& c = roster_[static_cast<std::size_t>(id - 1)];
     return accounts_[static_cast<std::size_t>(c.accountId)].balance();
 }
 
 std::vector<OperationRecord> AtmEngine::operations(const OperationFilter& filter) const {
-    std::shared_lock<std::shared_mutex> lock(mutex_);
+    std::lock_guard<std::mutex> lock(mutex_);
     std::vector<OperationRecord> out;
     for (const auto& rec : log_) {
         if (filter.client && rec.clientId != *filter.client) continue;

@@ -2,7 +2,6 @@
 #include <chrono>
 #include <cstdint>
 #include <optional>
-#include <stop_token>
 #include <thread>
 
 #include "atmsim/engine/AtmEngine.hpp"
@@ -27,8 +26,8 @@ bool runToCompletion(AtmEngine& engine, int count, std::chrono::seconds timeout)
     const auto deadline = std::chrono::steady_clock::now() + timeout;
     bool done = false;
     {
-        std::jthread eng([&](std::stop_token st) { engine.run(st); });
-        std::jthread arr([&](std::stop_token st) { engine.generateArrivals(st); });
+        std::thread eng([&] { engine.run(); });
+        std::thread arr([&] { engine.generateArrivals(); });
 
         while (std::chrono::steady_clock::now() < deadline) {
             const AtmSnapshot s = engine.snapshot();
@@ -41,9 +40,9 @@ bool runToCompletion(AtmEngine& engine, int count, std::chrono::seconds timeout)
             std::this_thread::sleep_for(2ms);
         }
         engine.requestStop();
-        eng.request_stop();
-        arr.request_stop();
-    }  // здесь потоки join'ятся
+        eng.join();
+        arr.join();
+    }
     return done;
 }
 
@@ -92,8 +91,8 @@ TEST(engine_stop_is_immediate_during_long_service) {
     cfg.clients.patienceSeconds = SecondsRange{1000000, 1000000};
 
     AtmEngine engine(cfg);
-    std::jthread eng([&](std::stop_token st) { engine.run(st); });
-    std::jthread arr([&](std::stop_token st) { engine.generateArrivals(st); });
+    std::thread eng([&] { engine.run(); });
+    std::thread arr([&] { engine.generateArrivals(); });
 
     // Ждём, пока банкомат реально начнёт обслуживать клиента.
     const auto deadline = std::chrono::steady_clock::now() + 3s;
@@ -110,8 +109,6 @@ TEST(engine_stop_is_immediate_during_long_service) {
     // Замеряем время реакции на stop.
     const auto t0 = std::chrono::steady_clock::now();
     engine.requestStop();
-    eng.request_stop();
-    arr.request_stop();
     eng.join();
     arr.join();
     const auto elapsed = std::chrono::steady_clock::now() - t0;
@@ -169,8 +166,8 @@ TEST(engine_concurrent_readers_are_race_free) {
     Config cfg = fastConfig(count, 1000.0);
     AtmEngine engine(cfg);
 
-    std::jthread eng([&](std::stop_token st) { engine.run(st); });
-    std::jthread arr([&](std::stop_token st) { engine.generateArrivals(st); });
+    std::thread eng([&] { engine.run(); });
+    std::thread arr([&] { engine.generateArrivals(); });
 
     std::atomic<bool> stopReader{false};
     std::thread reader([&] {
@@ -197,51 +194,48 @@ TEST(engine_concurrent_readers_are_race_free) {
     stopReader.store(true);
     reader.join();
     engine.requestStop();
-    eng.request_stop();
-    arr.request_stop();
     eng.join();
     arr.join();
     CHECK(true);  // главный результат — чистый прогон под ThreadSanitizer
 }
 
-// РЕГРЕССИЯ (найдено адверсариальной ревизией): остановка ТОЛЬКО через
-// request_stop() — как это делает деструктор jthread, БЕЗ вызова requestStop().
-// Потоки обязаны завершиться быстро: и когда спят в ожидании (риск потерянного
-// пробуждения stop_callback), и во время «бессрочного» ТО (риск горячего цикла).
-TEST(engine_bare_request_stop_terminates_threads) {
-    // Случай 1: потоки спят — Engine в долгом обслуживании, Arrival в долгом
-    // интервале между приходами.
-    {
-        Config cfg = fastConfig(5, 1.0);           // реальное время
-        cfg.clients.arrivalRatePerMinute = 0.5;    // интервал ~120 c -> Arrival спит
-        cfg.serviceTime.distribution = ServiceDistribution::Uniform;
-        cfg.serviceTime.minSeconds = 300.0;        // обслуживание 300 c -> Engine спит
-        cfg.serviceTime.maxSeconds = 300.0;
-        cfg.clients.patienceSeconds = SecondsRange{100000, 100000};
-        AtmEngine engine(cfg);
+// РЕГРЕССИЯ: requestStop() ОБЯЗАН быстро завершить оба потока — и когда они спят
+// в ожидании (долгое обслуживание / долгий интервал прихода), и во время
+// «бессрочного» ТО (риск вечного сна или горячего цикла). Это единственный путь
+// остановки после отказа от jthread/stop_token.
+TEST(engine_request_stop_terminates_sleeping_threads) {
+    Config cfg = fastConfig(5, 1.0);           // реальное время
+    cfg.clients.arrivalRatePerMinute = 0.5;    // интервал ~120 c -> Arrival спит
+    cfg.serviceTime.distribution = ServiceDistribution::Uniform;
+    cfg.serviceTime.minSeconds = 300.0;        // обслуживание 300 c -> Engine спит
+    cfg.serviceTime.maxSeconds = 300.0;
+    cfg.clients.patienceSeconds = SecondsRange{100000, 100000};
+    AtmEngine engine(cfg);
 
-        const auto t0 = std::chrono::steady_clock::now();
-        {
-            std::jthread eng([&](std::stop_token st) { engine.run(st); });
-            std::jthread arr([&](std::stop_token st) { engine.generateArrivals(st); });
-            std::this_thread::sleep_for(100ms);    // дать потокам заснуть в wait
-        }  // ~jthread: ТОЛЬКО request_stop() + join(), requestStop() НЕ вызывался
-        CHECK(std::chrono::steady_clock::now() - t0 < 5s);
-    }
-    // Случай 2: «бессрочное» ТО (state == Maintenance, дедлайн = max).
-    {
-        Config cfg = fastConfig(0, 1.0);
-        cfg.maintenance.defaultDurationSeconds = 0;  // 0 => ТО до явного stop
-        AtmEngine engine(cfg);
+    std::thread eng([&] { engine.run(); });
+    std::thread arr([&] { engine.generateArrivals(); });
+    std::this_thread::sleep_for(100ms);        // дать потокам заснуть в wait
 
-        const auto t0 = std::chrono::steady_clock::now();
-        {
-            std::jthread eng([&](std::stop_token st) { engine.run(st); });
-            engine.requestMaintenance(std::nullopt);
-            std::this_thread::sleep_for(100ms);
-        }  // ~jthread: только request_stop() — не должно ни зависнуть, ни крутиться
-        CHECK(std::chrono::steady_clock::now() - t0 < 5s);
-    }
+    const auto t0 = std::chrono::steady_clock::now();
+    engine.requestStop();
+    eng.join();
+    arr.join();
+    CHECK(std::chrono::steady_clock::now() - t0 < 5s);
+}
+
+TEST(engine_request_stop_terminates_during_indefinite_maintenance) {
+    Config cfg = fastConfig(0, 1.0);
+    cfg.maintenance.defaultDurationSeconds = 0;  // 0 => ТО до явного stop (дедлайн = max)
+    AtmEngine engine(cfg);
+
+    std::thread eng([&] { engine.run(); });
+    engine.requestMaintenance(std::nullopt);
+    std::this_thread::sleep_for(100ms);
+
+    const auto t0 = std::chrono::steady_clock::now();
+    engine.requestStop();
+    eng.join();  // не должно ни зависнуть, ни крутиться в горячем цикле
+    CHECK(std::chrono::steady_clock::now() - t0 < 5s);
 }
 
 // РЕГРЕССИЯ: после авто-завершения ТО по таймеру поток прихода должен
@@ -252,8 +246,8 @@ TEST(engine_arrivals_resume_after_timed_maintenance) {
     cfg.maintenance.arrivalsContinue = false;  // во время ТО приход стоит и ЖДЁТ
     AtmEngine engine(cfg);
 
-    std::jthread eng([&](std::stop_token st) { engine.run(st); });
-    std::jthread arr([&](std::stop_token st) { engine.generateArrivals(st); });
+    std::thread eng([&] { engine.run(); });
+    std::thread arr([&] { engine.generateArrivals(); });
     std::this_thread::sleep_for(30ms);
 
     engine.requestMaintenance(std::optional<int>(2));  // 2 модельные сек ~ 2 мс
@@ -282,8 +276,6 @@ TEST(engine_arrivals_resume_after_timed_maintenance) {
     CHECK(grew);
 
     engine.requestStop();
-    eng.request_stop();
-    arr.request_stop();
     eng.join();
     arr.join();
 }
@@ -292,7 +284,7 @@ TEST(engine_arrivals_resume_after_timed_maintenance) {
 TEST(engine_maintenance_state_transitions) {
     Config cfg = fastConfig(0, 1.0);  // без клиентов — проверяем только режим
     AtmEngine engine(cfg);
-    std::jthread eng([&](std::stop_token st) { engine.run(st); });
+    std::thread eng([&] { engine.run(); });
 
     engine.requestMaintenance(std::optional<int>(3600));  // долго, не авто-завершится
     std::this_thread::sleep_for(30ms);
@@ -303,7 +295,6 @@ TEST(engine_maintenance_state_transitions) {
     CHECK(engine.snapshot().state != AtmState::Maintenance);
 
     engine.requestStop();
-    eng.request_stop();
     eng.join();
     CHECK(engine.isStopped());
 }
@@ -321,8 +312,8 @@ TEST(engine_maintenance_reneges_queued_clients) {
     cfg.maintenance.defaultDurationSeconds = 1000000;         // ТО долгое, чтобы наблюсти
 
     AtmEngine engine(cfg);
-    std::jthread eng([&](std::stop_token st) { engine.run(st); });
-    std::jthread arr([&](std::stop_token st) { engine.generateArrivals(st); });
+    std::thread eng([&] { engine.run(); });
+    std::thread arr([&] { engine.generateArrivals(); });
 
     // Ждём, пока в очереди накопится хотя бы 3 клиента.
     auto deadline = std::chrono::steady_clock::now() + 5s;
@@ -342,8 +333,6 @@ TEST(engine_maintenance_reneges_queued_clients) {
     CHECK(engine.statsSnapshot().renegedByMaintenance > 0);
 
     engine.requestStop();
-    eng.request_stop();
-    arr.request_stop();
     eng.join();
     arr.join();
 }
@@ -352,7 +341,7 @@ TEST(engine_maintenance_reneges_queued_clients) {
 TEST(engine_pause_and_resume_change_state) {
     Config cfg = fastConfig(0, 1.0);  // без клиентов — проверяем только режимы
     AtmEngine engine(cfg);
-    std::jthread eng([&](std::stop_token st) { engine.run(st); });
+    std::thread eng([&] { engine.run(); });
 
     engine.requestPause();
     std::this_thread::sleep_for(20ms);
@@ -363,7 +352,6 @@ TEST(engine_pause_and_resume_change_state) {
     CHECK(engine.snapshot().state != AtmState::Paused);
 
     engine.requestStop();
-    eng.request_stop();
     eng.join();
     CHECK(engine.isStopped());
 }

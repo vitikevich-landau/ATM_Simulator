@@ -1,7 +1,6 @@
 #include <chrono>
 #include <iostream>
 #include <sstream>
-#include <stop_token>
 #include <string>
 #include <thread>
 
@@ -56,8 +55,8 @@ TEST(renderer_start_stop_lifecycle_is_safe) {
     cfg.ui.color = true;  // путь с ANSI-цветом
     AtmEngine engine(cfg);
 
-    std::jthread eng([&](std::stop_token st) { engine.run(st); });
-    std::jthread arr([&](std::stop_token st) { engine.generateArrivals(st); });
+    std::thread eng([&] { engine.run(); });
+    std::thread arr([&] { engine.generateArrivals(); });
 
     std::ostringstream sink;
     std::streambuf* old = std::cout.rdbuf(sink.rdbuf());  // перехват до старта потока
@@ -75,8 +74,6 @@ TEST(renderer_start_stop_lifecycle_is_safe) {
     std::cout.rdbuf(old);  // восстановление после join'а потока
 
     engine.requestStop();
-    eng.request_stop();
-    arr.request_stop();
     eng.join();
     arr.join();
 
