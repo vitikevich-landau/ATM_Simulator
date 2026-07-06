@@ -31,7 +31,12 @@ namespace atmsim {
 class LiveRenderer {
 public:
     LiveRenderer(AtmEngine& engine, const Config& cfg);
-    ~LiveRenderer();  // гарантированно останавливает render-поток (RAII)
+    // Деструктор определён inline (в заголовке) намеренно: так он получает
+    // COMDAT-компоновку и линкер сам сливает копии из разных единиц трансляции.
+    // Внешнее (out-of-line) определение спец-члена в статической библиотеке на
+    // MSVC приводило к LNK2005 «уже определён». Тело — просто гарантированная
+    // остановка потока (RAII).
+    ~LiveRenderer() { stop(); }
 
     LiveRenderer(const LiveRenderer&) = delete;             // не копируется/не перемещается —
     LiveRenderer& operator=(const LiveRenderer&) = delete;  // владеет потоком и мьютексами

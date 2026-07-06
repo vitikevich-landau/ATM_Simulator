@@ -314,9 +314,7 @@ void LiveRenderer::stop() {
     if (thread_.joinable()) thread_.join();
 }
 
-LiveRenderer::~LiveRenderer() {
-    stop();  // RAII: поток гарантированно остановлен и присоединён к моменту разрушения
-}
+// Деструктор определён inline в заголовке (см. LiveRenderer.hpp) — здесь его нет.
 
 void LiveRenderer::pause() { paused_.store(true); }
 void LiveRenderer::resume() { paused_.store(false); }
