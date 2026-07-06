@@ -67,6 +67,22 @@ Client AtmEngine::makeClient() {
 //  cfg.clients.count клиентов сгенерированы или пришёл сигнал остановки.
 // ---------------------------------------------------------------------------
 void AtmEngine::generateArrivals(std::stop_token stopToken) {
+    // Пробуждение при запросе остановки — через stop_callback (см. комментарий
+    // к wakeUp_ в заголовке: stop_token-перегрузки cv_any не используем из-за MSVC).
+    //
+    // КРИТИЧНО: перед notify_all() захватываем и отпускаем mutex_. Без этого
+    // возможно потерянное пробуждение: ожидающий проверил предикат (стоп ещё не
+    // запрошен) под mutex_, но ещё не заблокировался на cv — notify, пришедший
+    // в это окно, будит ноль потоков, и ожидающий засыпает навсегда. Захват
+    // mutex_ упорядочивает callback относительно проверки предиката: либо
+    // предикат уже видит stop_requested(), либо ожидающий гарантированно успел
+    // заблокироваться до notify. (Штатные stop_token-перегрузки cv_any решают
+    // это внутренним мьютексом — мы воспроизводим тот же приём вручную.)
+    std::stop_callback wakeOnStop(stopToken, [this] {
+        { std::unique_lock<std::shared_mutex> lk(mutex_); }
+        wakeUp_.notify_all();
+    });
+
     const double meanGapSec = 60.0 / cfg_.clients.arrivalRatePerMinute;
     std::exponential_distribution<double> gapDist(1.0 / meanGapSec);
 
@@ -81,9 +97,12 @@ void AtmEngine::generateArrivals(std::stop_token stopToken) {
 
         {
             // Прерываемое ожидание интервала: проснёмся раньше, если остановка.
+            // Стоп проверяется предикатом (stop_requested), пробуждение обеспечивает
+            // stop_callback выше — без stop_token-перегрузок cv_any (MSVC).
             std::unique_lock<std::shared_mutex> lock(mutex_);
-            wakeUp_.wait_for(lock, stopToken, realWait,
-                             [this] { return state_.load() == AtmState::Stopped; });
+            wakeUp_.wait_for(lock, realWait, [this, &stopToken] {
+                return state_.load() == AtmState::Stopped || stopToken.stop_requested();
+            });
             if (stopToken.stop_requested() || state_.load() == AtmState::Stopped) return;
         }
 
@@ -92,7 +111,9 @@ void AtmEngine::generateArrivals(std::stop_token stopToken) {
         // продолжается (люди подходят и видят, что банкомат недоступен).
         if (!cfg_.maintenance.arrivalsContinue) {
             std::unique_lock<std::shared_mutex> lock(mutex_);
-            wakeUp_.wait(lock, stopToken, [this] { return state_.load() != AtmState::Maintenance; });
+            wakeUp_.wait(lock, [this, &stopToken] {
+                return state_.load() != AtmState::Maintenance || stopToken.stop_requested();
+            });
             if (stopToken.stop_requested() || state_.load() == AtmState::Stopped) return;
         }
 
@@ -100,6 +121,9 @@ void AtmEngine::generateArrivals(std::stop_token stopToken) {
 
         {
             std::unique_lock<std::shared_mutex> lock(mutex_);
+            // Стоп мог прийти, пока мы создавали клиента (между локами) — тогда
+            // не добавляем его: «висящий» Waiting-клиент исказил бы итоговые счётчики.
+            if (stopToken.stop_requested() || state_.load() == AtmState::Stopped) return;
             queue_.push_back(c);
             roster_.push_back(c);  // реестр всех клиентов (roster_[id-1])
             if (queue_.size() > maxQueueLen_) maxQueueLen_ = queue_.size();
@@ -115,6 +139,18 @@ void AtmEngine::generateArrivals(std::stop_token stopToken) {
 // ---------------------------------------------------------------------------
 void AtmEngine::run(std::stop_token stopToken) {
     if (logger_) logger_->info("Поток обслуживания запущен");
+
+    // Пробуждение при запросе остановки (например, из деструктора jthread):
+    // callback будит wakeUp_, а предикаты ожиданий ниже явно проверяют
+    // stopToken.stop_requested(). stop_token-перегрузки cv_any не используем —
+    // на ряде версий MSVC STL они падают в рантайме (см. заголовок).
+    // Захват/отпускание mutex_ перед notify обязательны — защита от потерянного
+    // пробуждения (подробный разбор — в generateArrivals выше по файлу).
+    std::stop_callback wakeOnStop(stopToken, [this] {
+        { std::unique_lock<std::shared_mutex> lk(mutex_); }
+        wakeUp_.notify_all();
+    });
+
     while (true) {
         Client client;
         bool haveClient = false;
@@ -135,12 +171,30 @@ void AtmEngine::run(std::stop_token stopToken) {
                     maintenanceRenegePending_ = false;
                 }
                 // Ждём: наступит дедлайн ТО, ЛИБО сменится режим (maintenance stop /
-                // stop), смотря что раньше. Прерываемо по stop_token.
-                wakeUp_.wait_until(lock, stopToken, maintenanceDeadline_,
-                                   [this] { return state_.load() != AtmState::Maintenance; });
+                // stop / запрос остановки), смотря что раньше. Для «бессрочного» ТО
+                // (deadline == max) ждём без таймаута: wait_until с time_point::max()
+                // на некоторых реализациях переполняется.
+                const auto maintenanceOver = [this, &stopToken] {
+                    return state_.load() != AtmState::Maintenance || stopToken.stop_requested();
+                };
+                if (maintenanceDeadline_ == Clock::time_point::max()) {
+                    wakeUp_.wait(lock, maintenanceOver);
+                } else {
+                    wakeUp_.wait_until(lock, maintenanceDeadline_, maintenanceOver);
+                }
+                // Запрос остановки во время ТО: выходим из цикла СРАЗУ. Без этого
+                // при «голом» request_stop() (state_ остаётся Maintenance) wait
+                // мгновенно возвращается по stop_requested, continue снова ведёт в
+                // эту же ветку — и поток крутится в горячем цикле, а join() виснет.
+                if (stopToken.stop_requested()) break;
                 // Если всё ещё ТО и время вышло — авто-завершение.
                 if (state_.load() == AtmState::Maintenance && Clock::now() >= maintenanceDeadline_) {
                     state_.store(queue_.empty() ? AtmState::Idle : AtmState::Serving);
+                    // Обязательно будим: поток прихода может спать в ожидании конца
+                    // ТО (arrivals_continue=false), и без notify его предикат
+                    // «state != Maintenance» никто больше не перепроверит — приход
+                    // клиентов замер бы навсегда.
+                    wakeUp_.notify_all();
                 }
                 continue;  // на новый круг: там уже обычный режим
             }
@@ -148,7 +202,8 @@ void AtmEngine::run(std::stop_token stopToken) {
             // «Спим с условием»: просыпаемся, когда есть кого обслуживать в рабочем
             // режиме, ЛИБО пришла остановка, ЛИБО сменился режим (пауза/ТО). На
             // паузе предикат ложен — значит продолжаем спать, не крутя цикл впустую.
-            wakeUp_.wait(lock, stopToken, [this] {
+            wakeUp_.wait(lock, [this, &stopToken] {
+                if (stopToken.stop_requested()) return true;
                 const AtmState s = state_.load();
                 if (s == AtmState::Stopped) return true;
                 if (s == AtmState::Maintenance) return true;  // выйти -> обработать ТО сверху
@@ -196,11 +251,13 @@ void AtmEngine::run(std::stop_token stopToken) {
             // Вместо «слепого» sleep_for(realDuration) ждём по условию: проснёмся
             // либо когда истечёт realDuration (клиент обслужен штатно), либо когда
             // сменится режим (пауза/стоп через state_ + notify_all), либо по
-            // stop_token — СМОТРЯ ЧТО НАСТУПИТ РАНЬШЕ. Благодаря этому pause/stop
-            // применяются мгновенно, не дожидаясь конца случайной задержки (§5, §14).
-            // Пока идёт это ожидание, лок ОТПУЩЕН — читатели-снимки не блокируются.
-            wakeUp_.wait_for(lock, stopToken, realDuration,
-                             [this] { return state_.load() != AtmState::Serving; });
+            // запросу остановки (stop_callback будит, предикат видит) — СМОТРЯ ЧТО
+            // НАСТУПИТ РАНЬШЕ. Благодаря этому pause/stop применяются мгновенно,
+            // не дожидаясь конца случайной задержки (§5, §14). Пока идёт это
+            // ожидание, лок ОТПУЩЕН — читатели-снимки не блокируются.
+            wakeUp_.wait_for(lock, realDuration, [this, &stopToken] {
+                return state_.load() != AtmState::Serving || stopToken.stop_requested();
+            });
 
             // Операцию доводим до конца в любом случае (§4.6 по умолчанию —
             // «доработать текущую»): мы не ждём остаток задержки, но результат

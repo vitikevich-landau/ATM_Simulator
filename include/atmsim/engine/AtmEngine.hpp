@@ -88,8 +88,16 @@ private:
     std::atomic<AtmState> state_{AtmState::Idle};
 
     // condition_variable_any (а не condition_variable) — потому что она умеет
-    // работать с shared_mutex и со stop_token (C++20). На ней поток обслуживания
-    // «дремлет с условием» время обслуживания (см. §6.2 и run()).
+    // работать с shared_mutex. На ней поток обслуживания «дремлет с условием»
+    // время обслуживания (см. §6.2 и run()).
+    //
+    // ВАЖНО (совместимость с MSVC): перегрузки wait*/wait_for/wait_until,
+    // принимающие std::stop_token, здесь СОЗНАТЕЛЬНО НЕ используются — в ряде
+    // версий MSVC STL их внутренняя механика падает в рантайме («unlock of
+    // unowned mutex», порча стека). Вместо них: обычные перегрузки с предикатом,
+    // который явно проверяет stopToken.stop_requested(), плюс std::stop_callback
+    // в run()/generateArrivals(), будящий wakeUp_ при запросе остановки.
+    // Поведение эквивалентно: stop будит поток мгновенно (§6.2).
     std::condition_variable_any wakeUp_;
 
     std::deque<Client> queue_;         // очередь ожидающих (защищена mutex_)

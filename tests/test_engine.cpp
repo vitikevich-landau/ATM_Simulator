@@ -204,6 +204,90 @@ TEST(engine_concurrent_readers_are_race_free) {
     CHECK(true);  // главный результат — чистый прогон под ThreadSanitizer
 }
 
+// РЕГРЕССИЯ (найдено адверсариальной ревизией): остановка ТОЛЬКО через
+// request_stop() — как это делает деструктор jthread, БЕЗ вызова requestStop().
+// Потоки обязаны завершиться быстро: и когда спят в ожидании (риск потерянного
+// пробуждения stop_callback), и во время «бессрочного» ТО (риск горячего цикла).
+TEST(engine_bare_request_stop_terminates_threads) {
+    // Случай 1: потоки спят — Engine в долгом обслуживании, Arrival в долгом
+    // интервале между приходами.
+    {
+        Config cfg = fastConfig(5, 1.0);           // реальное время
+        cfg.clients.arrivalRatePerMinute = 0.5;    // интервал ~120 c -> Arrival спит
+        cfg.serviceTime.distribution = ServiceDistribution::Uniform;
+        cfg.serviceTime.minSeconds = 300.0;        // обслуживание 300 c -> Engine спит
+        cfg.serviceTime.maxSeconds = 300.0;
+        cfg.clients.patienceSeconds = SecondsRange{100000, 100000};
+        AtmEngine engine(cfg);
+
+        const auto t0 = std::chrono::steady_clock::now();
+        {
+            std::jthread eng([&](std::stop_token st) { engine.run(st); });
+            std::jthread arr([&](std::stop_token st) { engine.generateArrivals(st); });
+            std::this_thread::sleep_for(100ms);    // дать потокам заснуть в wait
+        }  // ~jthread: ТОЛЬКО request_stop() + join(), requestStop() НЕ вызывался
+        CHECK(std::chrono::steady_clock::now() - t0 < 5s);
+    }
+    // Случай 2: «бессрочное» ТО (state == Maintenance, дедлайн = max).
+    {
+        Config cfg = fastConfig(0, 1.0);
+        cfg.maintenance.defaultDurationSeconds = 0;  // 0 => ТО до явного stop
+        AtmEngine engine(cfg);
+
+        const auto t0 = std::chrono::steady_clock::now();
+        {
+            std::jthread eng([&](std::stop_token st) { engine.run(st); });
+            engine.requestMaintenance(std::nullopt);
+            std::this_thread::sleep_for(100ms);
+        }  // ~jthread: только request_stop() — не должно ни зависнуть, ни крутиться
+        CHECK(std::chrono::steady_clock::now() - t0 < 5s);
+    }
+}
+
+// РЕГРЕССИЯ: после авто-завершения ТО по таймеру поток прихода должен
+// проснуться и продолжить генерировать клиентов (arrivals_continue = false).
+// Без notify_all при авто-завершении приход замирал навсегда.
+TEST(engine_arrivals_resume_after_timed_maintenance) {
+    Config cfg = fastConfig(30, 1000.0);
+    cfg.maintenance.arrivalsContinue = false;  // во время ТО приход стоит и ЖДЁТ
+    AtmEngine engine(cfg);
+
+    std::jthread eng([&](std::stop_token st) { engine.run(st); });
+    std::jthread arr([&](std::stop_token st) { engine.generateArrivals(st); });
+    std::this_thread::sleep_for(30ms);
+
+    engine.requestMaintenance(std::optional<int>(2));  // 2 модельные сек ~ 2 мс
+
+    // Ждём конца ТО.
+    auto deadline = std::chrono::steady_clock::now() + 5s;
+    while (std::chrono::steady_clock::now() < deadline &&
+           engine.snapshot().state == AtmState::Maintenance) {
+        std::this_thread::sleep_for(2ms);
+    }
+    CHECK(engine.snapshot().state != AtmState::Maintenance);
+
+    // После конца ТО приход должен ОЖИТЬ: суммарное число известных системе
+    // клиентов (в очереди + обслужено + ушло) обязано вырасти.
+    const auto seen = [&] {
+        const AtmSnapshot s = engine.snapshot();
+        return s.totalServed + s.totalLeft + s.queueLength + (s.currentClientId ? 1u : 0u);
+    };
+    const auto before = seen();
+    deadline = std::chrono::steady_clock::now() + 5s;
+    bool grew = false;
+    while (std::chrono::steady_clock::now() < deadline) {
+        if (seen() > before) { grew = true; break; }
+        std::this_thread::sleep_for(2ms);
+    }
+    CHECK(grew);
+
+    engine.requestStop();
+    eng.request_stop();
+    arr.request_stop();
+    eng.join();
+    arr.join();
+}
+
 // maintenance start переводит в Maintenance, maintenance stop — обратно.
 TEST(engine_maintenance_state_transitions) {
     Config cfg = fastConfig(0, 1.0);  // без клиентов — проверяем только режим
