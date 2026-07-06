@@ -1,0 +1,42 @@
+{
+  "atm": {
+    "initial_cash": 50000000,
+    "low_cash_threshold": 2000000,
+    "currency": "EUR"
+  },
+  "clients": {
+    "arrival_mode": "poisson",
+    "arrival_rate_per_minute": 4.0,
+    "operation_weights": {
+      "check_balance": 0.3,
+      "withdraw": 0.5,
+      "deposit": 0.2
+    },
+    "amount_range": { "min": 50000, "max": 3000000 },
+    "patience_seconds": { "min": 30, "max": 300 }
+  },
+  "service_time": {
+    "distribution": "normal",
+    "params": { "mean_seconds": 25, "stddev_seconds": 7, "min_seconds": 5 }
+  },
+  "maintenance": {
+    "renege_probability": 0.6,
+    "default_duration_seconds": 120,
+    "arrivals_continue_during_maintenance": true
+  },
+  "simulation": {
+    "random_seed": 42,
+    "time_scale": 1.0
+  },
+  "logging": {
+    "level": "info",
+    "file": "atm_sim.log"
+  },
+  "ui": {
+    "live_mode": true,
+    "refresh_hz": 4,
+    "events_tail": 8,
+    "show_progress_bars": true,
+    "color": true
+  }
+}
