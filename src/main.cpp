@@ -1,44 +1,53 @@
 // ============================================================================
 //  main.cpp — точка входа консольного симулятора банкомата.
 //
-//  Этап M2 (часть a): загружаем конфигурацию и печатаем её сводку. Сама
-//  симуляция очереди приедет в M2 (часть b). Ошибки конфигурации (§6.5) —
-//  это исключения ConfigError, которые ловятся здесь и приводят к аккуратному
-//  завершению с сообщением, а не к падению.
+//  Этап M2: загружаем конфигурацию и прогоняем ОДНОПОТОЧНУЮ (дискретно-событийную)
+//  симуляцию очереди, печатаем сводную статистику СМО. Многопоточность и живой
+//  дашборд появятся в M3/M6. Ошибки конфигурации (§6.5) ловятся здесь.
 // ============================================================================
 
+#include <iomanip>
 #include <iostream>
 #include <string>
 
 #include "atmsim/Version.hpp"
 #include "atmsim/config/ConfigLoader.hpp"
+#include "atmsim/engine/SimulationRunner.hpp"
 
 using namespace atmsim;
 
 int main(int argc, char** argv) {
-    // Путь к конфигу — из аргумента командной строки, иначе файл по умолчанию.
     const std::string path = (argc > 1) ? argv[1] : "config/default_config.json";
 
     try {
         const Config cfg = ConfigLoader::loadFromFile(path);
 
-        std::cout << kProjectName << " v" << kVersion << '\n';
-        std::cout << "Конфигурация загружена из: " << path << "\n\n";
-        std::cout << "  Касса:        " << formatMoney(cfg.atm.initialCash) << ' '
-                  << cfg.atm.currency << "  (порог инкассации "
-                  << formatMoney(cfg.atm.lowCashThreshold) << ")\n";
-        std::cout << "  Приход:       "
-                  << (cfg.clients.arrivalMode == ArrivalMode::Poisson ? "poisson" : "batch")
-                  << ", " << cfg.clients.arrivalRatePerMinute << "/мин, клиентов: "
-                  << cfg.clients.count << '\n';
-        std::cout << "  Обслуживание: "
-                  << (cfg.serviceTime.distribution == ServiceDistribution::Normal ? "normal"
-                      : cfg.serviceTime.distribution == ServiceDistribution::Uniform ? "uniform"
-                      : "exponential")
-                  << ", среднее " << cfg.serviceTime.meanSeconds << " c\n";
-        std::cout << "  Воспроизв.:   seed=" << cfg.simulation.randomSeed
-                  << ", time_scale=" << cfg.simulation.timeScale << '\n';
-        std::cout << "\nЭтап M2a: конфигурация читается. Симуляция очереди — следующий шаг.\n";
+        std::cout << kProjectName << " v" << kVersion << " — однопоточная симуляция (M2)\n";
+        std::cout << "Конфиг: " << path << "  |  seed=" << cfg.simulation.randomSeed << "\n\n";
+
+        const SimulationResult r = SimulationRunner::run(cfg);
+
+        std::cout << std::fixed << std::setprecision(1);
+        std::cout << "=== Результаты симуляции ===\n";
+        std::cout << "Клиентов всего:      " << r.totalClients << '\n';
+        std::cout << "Обслужено:           " << r.served
+                  << "  (успех " << r.opSuccess << ", отказ " << r.opFailed << ")\n";
+        std::cout << "Ушли по терпению:    " << r.leftByPatience << '\n';
+        std::cout << "Среднее ожидание:    " << r.avgWaitSeconds << " c\n";
+        std::cout << "Среднее обслуж.:     " << r.avgServiceSeconds << " c\n";
+        std::cout << "Макс. длина очереди: " << r.maxQueueLength << '\n';
+        std::cout << "Загрузка rho=lambda/mu: " << std::setprecision(2) << r.rhoTheoretical
+                  << (r.rhoTheoretical > 1.0 ? "  (>1 — система перегружена)" : "") << '\n';
+        std::cout << "Факт. загрузка:      " << r.serverUtilization << '\n';
+        std::cout << std::setprecision(1)
+                  << "Длительность:        " << r.totalModelSeconds << " c модельного времени\n\n";
+
+        std::cout << "Касса:  " << formatMoney(r.cashStart) << " -> " << formatMoney(r.cashEnd)
+                  << ' ' << cfg.atm.currency << '\n';
+        std::cout << "Счета:  " << formatMoney(r.accountsStart) << " -> " << formatMoney(r.accountsEnd)
+                  << ' ' << cfg.atm.currency << '\n';
+        std::cout << "Инвариант денег (счета - касса неизменны): "
+                  << (r.moneyConserved ? "OK" : "НАРУШЕН!") << '\n';
     } catch (const ConfigError& e) {
         std::cerr << "Ошибка конфигурации: " << e.what() << '\n';
         return 1;

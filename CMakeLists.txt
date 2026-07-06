@@ -84,10 +84,17 @@ add_library(atmsim_config
     src/config/ConfigLoader.cpp)
 target_link_libraries(atmsim_config PUBLIC atmsim_core PRIVATE nlohmann_json)
 
+# --- Движок симуляции (M2): стратегия времени, фабрика клиентов, прогон --------
+add_library(atmsim_engine
+    src/engine/ServiceTimeProvider.cpp
+    src/engine/ClientFactory.cpp
+    src/engine/SimulationRunner.cpp)
+target_link_libraries(atmsim_engine PUBLIC atmsim_config)
+
 # --- Исполняемый файл --------------------------------------------------------
 add_executable(atm_sim
     src/main.cpp)
-target_link_libraries(atm_sim PRIVATE atmsim_config)
+target_link_libraries(atm_sim PRIVATE atmsim_engine)
 
 # --- Тесты -------------------------------------------------------------------
 # Пока используется минимальный собственный харнес (tests/simple_test.hpp) —
@@ -100,8 +107,10 @@ if(ATMSIM_BUILD_TESTS)
         tests/test_account.cpp
         tests/test_cashbox.cpp
         tests/test_operation.cpp
-        tests/test_config.cpp)
+        tests/test_config.cpp
+        tests/test_service_time.cpp
+        tests/test_simulation.cpp)
     target_include_directories(atmsim_tests PRIVATE tests)
-    target_link_libraries(atmsim_tests PRIVATE atmsim_config)
+    target_link_libraries(atmsim_tests PRIVATE atmsim_engine)
     add_test(NAME unit COMMAND atmsim_tests)
 endif()
