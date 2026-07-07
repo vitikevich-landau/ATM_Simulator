@@ -41,28 +41,6 @@ std::string repeatUtf8(const char* glyph, int n) {
     return s;
 }
 
-// Видимая ширина строки в СИМВОЛАХ: пропускает ANSI-последовательности (нулевая
-// ширина) и считает каждую UTF-8 кодовую точку за одну колонку.
-int visibleWidth(const std::string& s) {
-    int w = 0;
-    for (std::size_t i = 0; i < s.size();) {
-        const unsigned char c = static_cast<unsigned char>(s[i]);
-        if (c == 0x1B) {  // ESC: пропускаем всю ANSI-последовательность
-            std::size_t j = i + 1;
-            if (j < s.size() && s[j] == '[') {
-                ++j;
-                while (j < s.size() && !(s[j] >= '@' && s[j] <= '~')) ++j;
-                if (j < s.size()) ++j;
-            }
-            i = j;
-            continue;
-        }
-        if ((c & 0xC0) != 0x80) ++w;  // не байт-продолжение UTF-8 -> новый символ
-        ++i;
-    }
-    return w;
-}
-
 // Подгоняет строку под ширину width: короткую дополняет пробелами, длинную
 // усекает (ANSI-последовательности не режет, в конце усечения закрывает цвет).
 std::string fit(const std::string& s, int width) {
