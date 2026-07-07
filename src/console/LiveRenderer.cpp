@@ -13,8 +13,6 @@
 namespace atmsim {
 namespace {
 
-constexpr int kFeedRows = 4;   // сколько последних операций в правой колонке
-
 // Форматирует секунды как HH:MM:SS.
 std::string hms(double seconds) {
     long total = static_cast<long>(seconds < 0 ? 0 : seconds);
@@ -102,8 +100,12 @@ std::vector<std::string> LiveRenderer::composeLines() const {
     const AtmSnapshot s = engine_.snapshot();
     const StatsSnapshot st = engine_.statsSnapshot();
     const std::vector<ClientSnapshot> q = engine_.queueSnapshot();
+    // Длина ленты последних операций — из конфига (ui.events_tail), с разумным
+    // потолком, чтобы битый конфиг не растянул кадр до абсурда. Значение постоянно
+    // в пределах запуска, поэтому высота кадра остаётся стабильной (§4.8.5).
+    const int feedRows = std::clamp(cfg_.ui.eventsTail, 0, 50);
     OperationFilter feedFilter;
-    feedFilter.last = static_cast<std::size_t>(kFeedRows);
+    feedFilter.last = static_cast<std::size_t>(feedRows);
     const std::vector<OperationRecord> ops = engine_.operations(feedFilter);
 
     const std::string cur = cfg_.atm.currency;
@@ -147,8 +149,14 @@ std::vector<std::string> LiveRenderer::composeLines() const {
         // сняли -> красным (держится, пока направление не сменится). Полоса же
         // показывает уровень заполнения (красная при низкой кассе).
         const char* cashColor = (s.lastCashMove == OperationType::Withdraw) ? ansi::red() : ansi::green();
-        os << "   Касса [" << (s.lowCash ? C(ansi::red()) : C(ansi::green())) << bar(cashFrac, 16) << R()
-           << "] " << C(cashColor) << formatMoney(s.cashboxBalance) << R() << ' ' << cur
+        os << "   Касса ";
+        // Полоса заполнения кассы — только если ui.show_progress_bars включён;
+        // иначе оставляем само число (амаунт и так показан ниже).
+        if (cfg_.ui.showProgressBars) {
+            os << "[" << (s.lowCash ? C(ansi::red()) : C(ansi::green())) << bar(cashFrac, 16) << R()
+               << "] ";
+        }
+        os << C(cashColor) << formatMoney(s.cashboxBalance) << R() << ' ' << cur
            << (s.lowCash ? std::string(" ") + C(ansi::red()) + "НИЗКАЯ" + R() : std::string{});
         L.push_back(fit(os.str(), width_));
     }
@@ -192,8 +200,13 @@ std::vector<std::string> LiveRenderer::composeLines() const {
         os << " #" << c.id << ' ' << to_string(c.requestedOperation);
         const std::string amt = signedAmount(c.requestedOperation, c.amount);
         if (!amt.empty()) os << ' ' << amt;
-        os << "  " << static_cast<long>(c.waitedSeconds) << "c ["
-           << C(pc) << bar(frac, 4) << R() << "] " << static_cast<long>(c.remainingPatience) << 'c';
+        os << "  " << static_cast<long>(c.waitedSeconds) << "c ";
+        // Полоса остатка терпения — только при ui.show_progress_bars; иначе просто
+        // «ждал Nc / осталось Mc» без визуальной шкалы.
+        if (cfg_.ui.showProgressBars) {
+            os << "[" << C(pc) << bar(frac, 4) << R() << "] ";
+        }
+        os << static_cast<long>(c.remainingPatience) << 'c';
         left.push_back(os.str());
     }
     left.push_back(q.size() > static_cast<std::size_t>(queueVisible)
@@ -229,7 +242,7 @@ std::vector<std::string> LiveRenderer::composeLines() const {
     }
     right.push_back("");
     right.push_back(C(ansi::bold()) + "ПОСЛЕДНИЕ ОПЕРАЦИИ" + R());
-    for (int i = 0; i < kFeedRows; ++i) {
+    for (int i = 0; i < feedRows; ++i) {
         const int idx = static_cast<int>(ops.size()) - 1 - i;  // новые сверху
         if (idx < 0) { right.push_back(""); continue; }
         const OperationRecord& r = ops[static_cast<std::size_t>(idx)];

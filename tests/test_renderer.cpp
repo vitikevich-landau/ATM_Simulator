@@ -69,6 +69,45 @@ TEST(renderer_no_ansi_when_color_disabled) {
     CHECK(all.find('\033') == std::string::npos);
 }
 
+// ui.show_progress_bars и ui.events_tail реально влияют на кадр (раньше молча
+// игнорировались: полосы всегда, лента жёстко 4 строки).
+TEST(renderer_respects_ui_config) {
+    // show_progress_bars=false убирает полосы (символы █/░) из кадра.
+    {
+        Config cfg;
+        cfg.clients.count = 5;
+        cfg.ui.color = false;
+        cfg.ui.showProgressBars = false;
+        AtmEngine engine(cfg);
+        LiveRenderer r(engine, cfg);
+        std::string all;
+        for (const auto& l : r.composeLines()) all += l;
+        CHECK(all.find("█") == std::string::npos);
+        CHECK(all.find("░") == std::string::npos);
+    }
+    // По умолчанию (show_progress_bars=true) полоса заполнения кассы присутствует.
+    {
+        Config cfg;
+        cfg.clients.count = 5;
+        cfg.ui.color = false;  // showProgressBars=true по умолчанию
+        AtmEngine engine(cfg);
+        LiveRenderer r(engine, cfg);
+        std::string all;
+        for (const auto& l : r.composeLines()) all += l;
+        CHECK(all.find("█") != std::string::npos || all.find("░") != std::string::npos);
+    }
+    // events_tail управляет длиной ленты: при большом значении правая колонка
+    // (лента) выше левой при ЛЮБОЙ высоте терминала (queueVisible <= 47), поэтому
+    // высота кадра строго больше, чем при короткой ленте.
+    {
+        Config few;  few.ui.color = false; few.ui.eventsTail = 2;
+        Config many; many.ui.color = false; many.ui.eventsTail = 50;
+        AtmEngine e1(few);  LiveRenderer r1(e1, few);
+        AtmEngine e2(many); LiveRenderer r2(e2, many);
+        CHECK(r2.height() > r1.height());
+    }
+}
+
 // Полный жизненный цикл render-потока: старт, перерисовка, пауза/возобновление,
 // остановка (в т.ч. повторная) и разрушение. Именно этот путь ловил MSVC как
 // «порчу стека вокруг renderer». Здесь проверяем его под ASan/TSan; вывод
