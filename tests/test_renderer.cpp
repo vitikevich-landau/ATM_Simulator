@@ -30,6 +30,31 @@ TEST(renderer_frame_has_labels_and_fixed_height) {
     CHECK(all.find("Обслужено") != std::string::npos);
 }
 
+// Высота кадра НЕ должна зависеть от длины очереди: дашборд рисует фиксированный
+// «след» (ровно queueVisible слотов + строка переполнения), иначе плавающая
+// высота ломала позицию строки ввода (дублировался хвост команд, затирался ввод).
+TEST(renderer_height_stable_regardless_of_queue_length) {
+    Config cfg;
+    cfg.clients.count = 50;
+    cfg.clients.arrivalRatePerMinute = 1e6;   // приходят практически мгновенно
+    cfg.simulation.timeScale = 1e6;
+    cfg.ui.color = false;
+    AtmEngine engine(cfg);
+    LiveRenderer r(engine, cfg);
+
+    const int h0 = r.height();                                  // очередь пуста
+    CHECK_EQ(static_cast<int>(r.composeLines().size()), h0);
+
+    // Наполняем очередь: без потока обслуживания она только растёт. Поток прихода
+    // сам завершится, сгенерировав все 50 клиентов.
+    std::thread arr([&] { engine.generateArrivals(); });
+    arr.join();
+
+    // Кадр с длинной очередью обязан иметь ТУ ЖЕ высоту, что и при пустой.
+    CHECK_EQ(static_cast<int>(r.composeLines().size()), h0);
+    engine.requestStop();
+}
+
 // При выключенном цвете в кадре не должно быть ANSI-escape (байта ESC = 0x1B).
 // Это важно для деградации: в не-TTY выводе не должно быть управляющих кодов.
 TEST(renderer_no_ansi_when_color_disabled) {

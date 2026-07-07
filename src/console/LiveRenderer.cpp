@@ -198,8 +198,14 @@ std::vector<std::string> LiveRenderer::composeLines() const {
         os << "Очередь (" << s.queueLength << ")   макс. " << s.maxQueueLength;
         left.push_back(os.str());
     }
+    // ВАЖНО: всегда выводим РОВНО queueVisible строк очереди (пустые слоты —
+    // пустой строкой) и ВСЕГДА строку-хвост переполнения (пустую, если
+    // переполнения нет). Так высота дашборда ПОСТОЯННА и не зависит от длины
+    // очереди. Иначе плавающая высота ломала раскладку: height()/строку ввода
+    // (inputRow = height()+2) считаем один раз, и при росте/сжатии кадра нижний
+    // «хвост» (строка команд) налезал на ввод и дублировался (§4.8.5).
     for (int i = 0; i < queueVisible; ++i) {
-        if (i >= static_cast<int>(q.size())) break;
+        if (i >= static_cast<int>(q.size())) { left.push_back(std::string{}); continue; }
         const ClientSnapshot& c = q[static_cast<std::size_t>(i)];
         const double total = c.waitedSeconds + c.remainingPatience;
         const double frac = (total > 0.0) ? c.remainingPatience / total : 0.0;
@@ -212,10 +218,9 @@ std::vector<std::string> LiveRenderer::composeLines() const {
            << C(pc) << bar(frac, 4) << R() << "] " << static_cast<long>(c.remainingPatience) << 'c';
         left.push_back(os.str());
     }
-    if (q.size() > static_cast<std::size_t>(queueVisible)) {
-        left.push_back(C(ansi::grey()) + " … ещё " + std::to_string(q.size() - queueVisible) +
-                       " (команда queue)" + R());
-    }
+    left.push_back(q.size() > static_cast<std::size_t>(queueVisible)
+        ? C(ansi::grey()) + " … ещё " + std::to_string(q.size() - queueVisible) + " (команда queue)" + R()
+        : std::string{});
 
     // === Правая колонка: статистика + лента ===
     std::vector<std::string> right;
