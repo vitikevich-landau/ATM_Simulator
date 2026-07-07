@@ -86,6 +86,9 @@ TEST(parser_maintenance_errors) {
     CHECK(!parseCommand("maintenance").error.empty());        // нет start/stop
     CHECK(!parseCommand("maintenance frob").error.empty());   // не start/stop
     CHECK(!parseCommand("maintenance start abc").error.empty()); // длительность не число
+    // Длительность больше INT_MAX должна отвергаться, а не тихо переполняться в
+    // <= 0 (что движок принял бы за бессрочное ТО). 4294967296 = 2^32.
+    CHECK(!parseCommand("maintenance start 4294967296").error.empty());
 }
 
 TEST(parser_live) {

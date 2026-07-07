@@ -1,5 +1,6 @@
 #include "atmsim/console/CommandParser.hpp"
 
+#include <limits>
 #include <sstream>
 #include <vector>
 
@@ -73,6 +74,13 @@ Command parseCommand(const std::string& line) {
                 long long n = 0;
                 if (!parsePositive(tok[2], n)) {
                     c.error = "неверная длительность ТО: '" + tok[2] + "'";
+                    return c;
+                }
+                // c.seconds — int; без верхней границы сужение static_cast<int>
+                // большого long long дало бы <= 0, а движок трактует <= 0 как
+                // БЕССРОЧНОЕ ТО (до команды stop). Отсекаем заранее.
+                if (n > std::numeric_limits<int>::max()) {
+                    c.error = "слишком большая длительность ТО: '" + tok[2] + "'";
                     return c;
                 }
                 c.seconds = static_cast<int>(n);
