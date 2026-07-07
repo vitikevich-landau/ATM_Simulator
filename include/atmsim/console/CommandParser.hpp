@@ -31,6 +31,7 @@ enum class CommandType {
     MaintenanceStart,  // maintenance start [сек]
     MaintenanceStop,   // maintenance stop
     Stop,        // stop / exit / quit
+    Restart,     // restart / again — новый прогон с нуля
     Export,      // export <file>
     Unknown      // нераспознанная команда
 };

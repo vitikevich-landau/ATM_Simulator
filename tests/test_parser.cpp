@@ -19,6 +19,11 @@ TEST(parser_stop_aliases) {
     CHECK(parseCommand("quit").type == CommandType::Stop);
 }
 
+TEST(parser_restart) {
+    CHECK(parseCommand("restart").type == CommandType::Restart);
+    CHECK(parseCommand("again").type == CommandType::Restart);
+}
+
 TEST(parser_empty_and_unknown) {
     CHECK(parseCommand("").type == CommandType::Empty);
     CHECK(parseCommand("   ").type == CommandType::Empty);

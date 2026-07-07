@@ -93,6 +93,8 @@ Command parseCommand(const std::string& line) {
         }
     } else if (cmd == "stop" || cmd == "exit" || cmd == "quit") {
         c.type = CommandType::Stop;
+    } else if (cmd == "restart" || cmd == "again") {
+        c.type = CommandType::Restart;
     } else if (cmd == "client" || cmd == "balance") {
         c.type = (cmd == "client") ? CommandType::Client : CommandType::Balance;
         if (tok.size() < 2) {

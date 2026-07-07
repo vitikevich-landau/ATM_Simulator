@@ -413,6 +413,15 @@ void AtmEngine::applyMaintenanceRenegingLocked() {
     queue_ = std::move(kept);
 }
 
+bool AtmEngine::allClientsProcessed() const {
+    std::lock_guard<std::mutex> lock(mutex_);
+    // Все клиенты сгенерированы (поток прихода отработал), никого нет в очереди и
+    // на обслуживании, и число «обслужен + ушёл» покрывает всех сгенерированных.
+    return generatedCount_ >= cfg_.clients.count && queue_.empty() &&
+           !currentClient_.has_value() &&
+           (totalServed_ + totalLeft_) >= static_cast<std::uint64_t>(generatedCount_);
+}
+
 // ---------------------------------------------------------------------------
 //  СНИМКИ. Читатели берут shared_lock — параллельно друг другу и не мешая
 //  писателю дольше, чем нужно на копирование небольшого объёма данных.

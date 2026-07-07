@@ -61,6 +61,31 @@ TEST(engine_processes_every_client) {
     CHECK_EQ(s.totalServed + s.totalLeft, static_cast<std::uint64_t>(count));
 }
 
+// allClientsProcessed(): ложь до старта, истина после того, как все клиенты
+// достигли терминального состояния (для панели «симуляция завершена»).
+TEST(engine_reports_all_clients_processed_on_completion) {
+    const int count = 20;
+    Config cfg = fastConfig(count, 1000.0);
+    AtmEngine engine(cfg);
+
+    CHECK(!engine.allClientsProcessed());  // ещё ничего не сгенерировано
+
+    std::thread eng([&] { engine.run(); });
+    std::thread arr([&] { engine.generateArrivals(); });
+
+    const auto deadline = std::chrono::steady_clock::now() + 10s;
+    while (std::chrono::steady_clock::now() < deadline && !engine.allClientsProcessed()) {
+        std::this_thread::sleep_for(2ms);
+    }
+    CHECK(engine.allClientsProcessed());
+    const AtmSnapshot s = engine.snapshot();
+    CHECK_EQ(s.totalServed + s.totalLeft, static_cast<std::uint64_t>(count));
+
+    engine.requestStop();
+    eng.join();
+    arr.join();
+}
+
 // Инвариант сохранения денег держится и в многопоточном прогоне.
 TEST(engine_conserves_money_under_threads) {
     const int count = 40;
