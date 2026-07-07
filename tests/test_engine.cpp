@@ -123,6 +123,55 @@ TEST(engine_stop_is_immediate_during_long_service) {
     CHECK(engine.statsSnapshot().utilization <= 1.0);
 }
 
+// pause ПРИОСТАНАВЛИВАЕТ текущее обслуживание, а не завершает его: клиент остаётся
+// «в обслуживании» даже спустя время дольше realDuration, а resume доводит остаток
+// до конца. Регрессия: раньше pause мгновенно «дообслуживал» текущего (как stop) —
+// клиент исчезал из обслуживания при первой же паузе.
+TEST(engine_pause_suspends_and_resumes_current_client) {
+    Config cfg = fastConfig(1, 1.0);           // реальное время
+    cfg.serviceTime.distribution = ServiceDistribution::Uniform;
+    cfg.serviceTime.minSeconds = 1.0;          // realDuration = 1 c
+    cfg.serviceTime.maxSeconds = 1.0;
+    cfg.clients.patienceSeconds = SecondsRange{1000000, 1000000};  // не уйдёт по терпению
+
+    AtmEngine engine(cfg);
+    std::thread eng([&] { engine.run(); });
+    std::thread arr([&] { engine.generateArrivals(); });
+
+    // Ждём, пока обслуживание реально началось.
+    const auto deadline = std::chrono::steady_clock::now() + 3s;
+    while (std::chrono::steady_clock::now() < deadline &&
+           !engine.snapshot().currentClientId.has_value()) {
+        std::this_thread::sleep_for(1ms);
+    }
+    CHECK(engine.snapshot().currentClientId.has_value());
+
+    engine.requestPause();
+
+    // Держим паузу ДОЛЬШЕ длительности обслуживания (realDuration = 1 c). Со старым
+    // поведением (pause = «доработать текущую») клиент бы уже обслужился и пропал.
+    std::this_thread::sleep_for(1500ms);
+    {
+        const AtmSnapshot s = engine.snapshot();
+        CHECK(s.state == AtmState::Paused);
+        CHECK(s.currentClientId.has_value());                    // всё ещё держим клиента
+        CHECK_EQ(s.totalServed, static_cast<std::uint64_t>(0));  // и ещё не обслужили
+    }
+
+    // Возобновляем — остаток обслуживания обязан доработаться до конца.
+    engine.requestResume();
+    const auto deadline2 = std::chrono::steady_clock::now() + 3s;
+    while (std::chrono::steady_clock::now() < deadline2 &&
+           engine.snapshot().totalServed == 0) {
+        std::this_thread::sleep_for(2ms);
+    }
+    CHECK_EQ(engine.snapshot().totalServed, static_cast<std::uint64_t>(1));
+
+    engine.requestStop();
+    eng.join();
+    arr.join();
+}
+
 // В журнале ровно одна запись на каждого обслуженного клиента (§4.4).
 TEST(engine_logs_one_record_per_served) {
     const int count = 30;

@@ -221,22 +221,42 @@ void AtmEngine::run() {
         {
             std::unique_lock<std::mutex> lock(mutex_);
 
-            // Вместо «слепого» sleep_for(realDuration) ждём по условию: проснёмся
-            // либо когда истечёт realDuration (клиент обслужен штатно), либо когда
-            // сменится режим (пауза/стоп через state_ + notify_all) — СМОТРЯ ЧТО
-            // НАСТУПИТ РАНЬШЕ. Благодаря этому pause/stop применяются мгновенно,
-            // не дожидаясь конца случайной задержки (§5, §14). Пока идёт это
-            // ожидание, лок ОТПУЩЕН — читатели-снимки не блокируются.
-            const auto serviceStart = Clock::now();
-            wakeUp_.wait_for(lock, realDuration, [this] {
-                return state_.load() != AtmState::Serving;  // Stopped тоже != Serving
-            });
-            // Сколько МОДЕЛЬНОГО времени операция реально заняла. При штатном
-            // завершении ~= serviceModelSec; при досрочном пробуждении (pause/stop/
-            // ТО прервали ожидание) — меньше. Нужно для честного учёта загрузки ниже.
-            const double actualServiceModelSec =
-                std::chrono::duration<double>(Clock::now() - serviceStart).count() *
-                cfg_.simulation.timeScale;
+            // Вместо «слепого» sleep_for(realDuration) ждём по условию, накапливая
+            // ЧИСТОЕ время обслуживания (servedReal), пока не набежит realDuration.
+            // Разные прерывания трактуем по-разному (§4.6):
+            //   * pause — ПРИОСТАНОВКА: клиент остаётся «в обслуживании»
+            //     (currentClient_ не сбрасываем), таймер службы замирает и
+            //     продолжается с resume — остаток дообслуживаем;
+            //   * stop / ТО — «доработать текущую»: выходим из цикла и ниже
+            //     доводим операцию до конца.
+            // Пока идут ожидания, лок ОТПУЩЕН — читатели-снимки не блокируются,
+            // а pause/resume/stop применяются мгновенно (§5, §14).
+            std::chrono::duration<double> remaining(realDuration);
+            std::chrono::duration<double> servedReal(0.0);
+            for (;;) {
+                const auto sliceStart = Clock::now();
+                wakeUp_.wait_for(lock, remaining, [this] {
+                    return state_.load() != AtmState::Serving;  // Paused/Stopped/ТО будят
+                });
+                servedReal += std::chrono::duration<double>(Clock::now() - sliceStart);
+                if (state_.load() != AtmState::Paused) {
+                    // Serving — истёк таймер (обслужен штатно); Stopped/ТО — доводим.
+                    break;
+                }
+                // Пауза: замираем до resume/stop, НЕ тратя время службы. Остаток
+                // (realDuration − уже отработанное) дообслужим после возобновления.
+                remaining = realDuration - servedReal;
+                if (remaining < std::chrono::duration<double>::zero()) {
+                    remaining = std::chrono::duration<double>::zero();
+                }
+                wakeUp_.wait(lock, [this] { return state_.load() != AtmState::Paused; });
+                if (state_.load() == AtmState::Stopped) break;  // stop во время паузы
+                // resume вернул Serving — следующая итерация дообслужит remaining.
+            }
+            // Фактически прошедшее МОДЕЛЬНОЕ время обслуживания (без учёта пауз).
+            // При штатном завершении ~= serviceModelSec; при stop/ТО в середине —
+            // меньше. Нужно для честного учёта загрузки ниже.
+            const double actualServiceModelSec = servedReal.count() * cfg_.simulation.timeScale;
 
             // Операцию доводим до конца в любом случае (§4.6 по умолчанию —
             // «доработать текущую»): мы не ждём остаток задержки, но результат
@@ -319,7 +339,11 @@ void AtmEngine::requestResume() {
     {
         std::unique_lock<std::mutex> lock(mutex_);
         if (state_.load() == AtmState::Paused) {
-            state_.store(queue_.empty() ? AtmState::Idle : AtmState::Serving);
+            // Если пауза застала клиента «в обслуживании» (currentClient_ держится),
+            // возвращаемся в Serving, чтобы поток дообслужил его остаток — даже если
+            // очередь опустела. Иначе режим выбираем по наличию очереди.
+            const bool hasWork = currentClient_.has_value() || !queue_.empty();
+            state_.store(hasWork ? AtmState::Serving : AtmState::Idle);
         }
     }
     wakeUp_.notify_all();
