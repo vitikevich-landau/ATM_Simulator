@@ -271,6 +271,12 @@ void LiveRenderer::paintFrame() {
     out += ansi::restoreCursor();
 
     std::lock_guard<std::mutex> lock(outMutex_);
+    // Повторная проверка ПОД локом. Между «if(!paused_)» в renderLoop и этим
+    // моментом мог стартовать overlay: showOverlay() выставляет paused_ и печатает
+    // полноэкранный отчёт под ТЕМ ЖЕ outMutex_. Без этой проверки уже собранный
+    // кадр дашборда затёр бы отчёт (или врезался бы в него). Если встали на паузу
+    // — молча пропускаем кадр.
+    if (paused_.load()) return;
     std::cout << out << std::flush;
 }
 

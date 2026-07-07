@@ -267,7 +267,13 @@ void AdminConsole::showOverlay(LiveRenderer& renderer, const std::function<void(
         std::lock_guard<std::mutex> lk(renderer.outputMutex());
         std::cout << ansi::clearScreen() << ansi::home() << std::flush;
     }
-    printFn();
+    {
+        // Печать отчёта — ПОД тем же outputMutex_, что и кадры рендерера. Иначе
+        // «долетевший» кадр (см. повторную проверку paused_ в paintFrame) писал бы
+        // в std::cout параллельно с printFn и символьно перемешивался с отчётом.
+        std::lock_guard<std::mutex> lk(renderer.outputMutex());
+        printFn();
+    }
     {
         std::lock_guard<std::mutex> lk(renderer.outputMutex());
         std::cout << "\n-- нажмите Enter, чтобы вернуться к дашборду --" << std::flush;
