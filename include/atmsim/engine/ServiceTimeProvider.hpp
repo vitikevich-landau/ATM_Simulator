@@ -30,4 +30,12 @@ public:
 // Фабрика (§6.4): создаёт нужную стратегию по конфигурации.
 std::unique_ptr<ServiceTimeProvider> makeServiceTimeProvider(const ServiceTimeConfig& cfg);
 
+// Ожидаемое (среднее) время обслуживания по выбранному распределению — для
+// теоретического ρ = λ/μ (§10). ВАЖНО: среднее зависит от распределения, а не
+// только от mean_seconds:
+//   * normal / exponential — параметр mean_seconds;
+//   * uniform — середина диапазона (min_seconds + max_seconds) / 2; mean_seconds
+//     здесь вообще не участвует в генерации, поэтому брать его для μ неверно.
+double expectedServiceSeconds(const ServiceTimeConfig& cfg);
+
 }  // namespace atmsim

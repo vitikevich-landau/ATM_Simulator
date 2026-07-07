@@ -123,9 +123,11 @@ SimulationResult SimulationRunner::run(const Config& cfg) {
     r.totalModelSeconds = lastEventSec;
 
     // ρ = λ/μ: λ — приходов в секунду, μ — обслуживаний в секунду (1/среднее).
+    // Среднее время обслуживания берём по фактическому распределению: для uniform
+    // это (min+max)/2, а не mean_seconds (см. expectedServiceSeconds()).
     const double lambdaPerSec = cfg.clients.arrivalRatePerMinute / 60.0;
-    const double muPerSec = (cfg.serviceTime.meanSeconds > 0.0)
-                                ? 1.0 / cfg.serviceTime.meanSeconds : 0.0;
+    const double meanService = expectedServiceSeconds(cfg.serviceTime);
+    const double muPerSec = (meanService > 0.0) ? 1.0 / meanService : 0.0;
     r.rhoTheoretical = (muPerSec > 0.0) ? lambdaPerSec / muPerSec : 0.0;
     r.serverUtilization = (lastEventSec > 0.0) ? busyTime / lastEventSec : 0.0;
 

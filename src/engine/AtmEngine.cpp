@@ -458,9 +458,12 @@ StatsSnapshot AtmEngine::statsSnapshot() const {
     s.avgServiceSeconds = (totalServed_ > 0) ? sumServiceModel_ / static_cast<double>(totalServed_) : 0.0;
     s.maxQueueLength = maxQueueLen_;
 
-    // ρ = λ/μ из конфигурации (§10).
+    // ρ = λ/μ из конфигурации (§10). μ = 1/среднее_время_обслуживания, где
+    // среднее берётся по фактическому распределению (для uniform это (min+max)/2,
+    // а не mean_seconds) — см. expectedServiceSeconds().
     const double lambda = cfg_.clients.arrivalRatePerMinute / 60.0;
-    const double mu = (cfg_.serviceTime.meanSeconds > 0.0) ? 1.0 / cfg_.serviceTime.meanSeconds : 0.0;
+    const double meanService = expectedServiceSeconds(cfg_.serviceTime);
+    const double mu = (meanService > 0.0) ? 1.0 / meanService : 0.0;
     s.rhoTheoretical = (mu > 0.0) ? lambda / mu : 0.0;
 
     const double uptimeModel =

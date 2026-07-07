@@ -61,4 +61,20 @@ std::unique_ptr<ServiceTimeProvider> makeServiceTimeProvider(const ServiceTimeCo
     return std::make_unique<NormalServiceTime>(cfg.meanSeconds, cfg.stddevSeconds, cfg.minSeconds);
 }
 
+double expectedServiceSeconds(const ServiceTimeConfig& cfg) {
+    switch (cfg.distribution) {
+        case ServiceDistribution::Uniform:
+            // Среднее равномерного [min, max] — середина диапазона. mean_seconds
+            // для uniform не задействован в генерации (см. UniformServiceTime).
+            return (cfg.minSeconds + cfg.maxSeconds) / 2.0;
+        case ServiceDistribution::Normal:
+        case ServiceDistribution::Exponential:
+            // Для обоих параметр распределения — это и есть среднее mean_seconds
+            // (normal: μ; exponential: 1/λ = mean). Отсечку по min_seconds здесь
+            // не учитываем — для теоретического ρ берём номинальное среднее.
+            return cfg.meanSeconds;
+    }
+    return cfg.meanSeconds;  // недостижимо при корректном enum
+}
+
 }  // namespace atmsim
