@@ -52,6 +52,12 @@ private:
     // приостанавливает рендер, печатает, ждёт Enter, восстанавливает дашборд.
     void showOverlay(LiveRenderer& renderer, const std::function<void()>& printFn);
 
+    // Интерактивный просмотр очереди в живом режиме: raw-режим ввода, прокрутка
+    // стрелками (↑/↓, PgUp/PgDn, Home/End), выход по Esc/q/Enter. Очередь
+    // перечитывается на каждую перерисовку (живые данные). Если raw-режим
+    // недоступен (не терминал) — деградирует до статического списка.
+    void showQueueInteractive(LiveRenderer& renderer);
+
     AtmEngine& engine_;
     Config cfg_;
     bool ttyAnsi_{false};  // stdout — интерактивный терминал (можно live-режим)

@@ -1,11 +1,14 @@
 #include "atmsim/console/AdminConsole.hpp"
 
+#include <algorithm>
 #include <chrono>
 #include <ctime>
 #include <fstream>
 #include <iomanip>
 #include <iostream>
+#include <sstream>
 #include <string>
+#include <vector>
 
 #include "atmsim/console/Terminal.hpp"
 #include "atmsim/core/Money.hpp"
@@ -287,6 +290,74 @@ void AdminConsole::showOverlay(LiveRenderer& renderer, const std::function<void(
     renderer.resume();
 }
 
+void AdminConsole::showQueueInteractive(LiveRenderer& renderer) {
+    RawInputMode raw;  // stdin в raw-режим на время просмотра (восстановится в дтор)
+    // Если raw-режим недоступен (stdout — терминал, а stdin — нет и т.п.) — не
+    // ломаемся, а деградируем до обычного статического ответа с выходом по Enter.
+    if (!raw.active()) {
+        showOverlay(renderer, [&] { printQueue(); });
+        return;
+    }
+
+    renderer.pause();  // рендер дашборда молчит — экраном владеет просмотрщик
+    int offset = 0;    // индекс первого видимого клиента очереди
+    bool leave = false;
+    while (!leave) {
+        // Живые данные: очередь перечитывается на каждую перерисовку.
+        const std::vector<ClientSnapshot> q = engine_.queueSnapshot();
+        const int total = static_cast<int>(q.size());
+        const int viewRows = std::max(5, Terminal::height() - 4);  // строк под список
+        offset = clampScrollOffset(offset, total, viewRows);
+
+        {
+            std::lock_guard<std::mutex> lk(renderer.outputMutex());
+            std::ostringstream os;
+            os << ansi::clearScreen() << ansi::home();
+            os << ansi::bold() << "Очередь: " << total << " клиент(ов)" << ansi::reset();
+            if (total > viewRows) {
+                os << ansi::grey() << "   показаны " << (offset + 1) << "–"
+                   << std::min(offset + viewRows, total) << " из " << total << ansi::reset();
+            }
+            os << '\n' << '\n';
+            for (int i = 0; i < viewRows; ++i) {
+                const int idx = offset + i;
+                if (idx >= total) { os << '\n'; continue; }  // пустой слот — постоянная высота
+                const ClientSnapshot& c = q[static_cast<std::size_t>(idx)];
+                os << "  " << (idx + 1) << ". #" << c.id << ' ' << to_string(c.requestedOperation);
+                if (c.requestedOperation != OperationType::CheckBalance) {
+                    os << ' ' << formatMoney(c.amount);
+                }
+                os << "  ждёт " << static_cast<long>(c.waitedSeconds)
+                   << " c, терпение " << static_cast<long>(c.remainingPatience) << " c\n";
+            }
+            os << '\n' << ansi::grey()
+               << "↑/↓ прокрутка · PgUp/PgDn страница · Home/End · Esc/q выход" << ansi::reset();
+            std::cout << os.str() << std::flush;
+        }
+
+        char ch = 0;
+        switch (readKey(ch)) {
+            case Key::Up:       offset -= 1; break;
+            case Key::Down:     offset += 1; break;
+            case Key::PageUp:   offset -= viewRows; break;
+            case Key::PageDown: offset += viewRows; break;
+            case Key::Home:     offset = 0; break;
+            case Key::End:      offset = total; break;  // клампнётся к максимуму ниже
+            case Key::Enter:
+            case Key::Escape:
+            case Key::Eof:      leave = true; break;
+            case Key::Char:     if (ch == 'q' || ch == 'Q') leave = true; break;
+            default: break;  // None и прочее — игнорируем
+        }
+    }
+
+    {
+        std::lock_guard<std::mutex> lk(renderer.outputMutex());
+        std::cout << ansi::clearScreen() << std::flush;
+    }
+    renderer.resume();
+}
+
 AdminConsole::Next AdminConsole::runLiveSession() {
     LiveRenderer renderer(engine_, cfg_);
     const int inputRow = renderer.height() + 2;  // строка ввода — НИЖЕ дашборда
@@ -323,6 +394,11 @@ AdminConsole::Next AdminConsole::runLiveSession() {
             case CommandType::MaintenanceStop:  engine_.endMaintenance(); break;
             case CommandType::Live: break;  // уже в живом режиме
             case CommandType::LiveOff: result = Next::Command; exitLoop = true; break;
+            case CommandType::Queue:
+                // В живом режиме очередь листаем интерактивно (стрелки/PgUp/PgDn),
+                // а не показываем статичным полноэкранным списком.
+                showQueueInteractive(renderer);
+                break;
             case CommandType::Stop:
                 engine_.requestStop();
                 result = Next::Quit;
