@@ -36,6 +36,21 @@ TEST(config_reads_all_fields) {
     CHECK(c.ui.liveMode == true);
 }
 
+// Комментарии //… и /*…*/ в конфиге допускаются (для документирования файла) и
+// не мешают чтению значений.
+TEST(config_allows_comments) {
+    const std::string txt = R"({
+      // строчный комментарий
+      "atm": { "currency": "USD" },   // валюта
+      /* блочный
+         комментарий */
+      "clients": { "count": 7 }
+    })";
+    const Config c = ConfigLoader::loadFromString(txt);
+    CHECK_EQ(c.atm.currency, std::string("USD"));
+    CHECK_EQ(c.clients.count, 7);
+}
+
 // Отсутствующие ключи -> остаются значения по умолчанию (из Config.hpp).
 TEST(config_uses_defaults_for_missing_keys) {
     const Config c = ConfigLoader::loadFromString("{}");

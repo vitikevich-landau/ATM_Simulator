@@ -73,9 +73,14 @@ Config ConfigLoader::loadFromString(const std::string& jsonText) {
     Config c;  // начинаем со значений по умолчанию (см. Config.hpp)
 
     // 1) Разбор самого JSON. Синтаксическая ошибка -> ConfigError.
+    //    Аргументы parse: (текст, callback=nullptr, allow_exceptions=true,
+    //    ignore_comments=true). Последний ВКЛючает поддержку комментариев //… и
+    //    /*…*/ — чтобы config/default_config.json можно было подробно
+    //    прокомментировать (строгий JSON комментарии запрещает). На чтение
+    //    значений это не влияет: комментарии просто пропускаются.
     json j;
     try {
-        j = json::parse(jsonText);
+        j = json::parse(jsonText, nullptr, true, true);
     } catch (const json::parse_error& e) {
         throw ConfigError(std::string("некорректный JSON: ") + e.what());
     }
