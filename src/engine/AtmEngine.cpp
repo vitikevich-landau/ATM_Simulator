@@ -1,5 +1,6 @@
 #include "atmsim/engine/AtmEngine.hpp"
 
+#include <algorithm>  // std::min
 #include <chrono>
 #include <mutex>  // std::unique_lock, std::lock_guard
 
@@ -226,9 +227,16 @@ void AtmEngine::run() {
             // НАСТУПИТ РАНЬШЕ. Благодаря этому pause/stop применяются мгновенно,
             // не дожидаясь конца случайной задержки (§5, §14). Пока идёт это
             // ожидание, лок ОТПУЩЕН — читатели-снимки не блокируются.
+            const auto serviceStart = Clock::now();
             wakeUp_.wait_for(lock, realDuration, [this] {
                 return state_.load() != AtmState::Serving;  // Stopped тоже != Serving
             });
+            // Сколько МОДЕЛЬНОГО времени операция реально заняла. При штатном
+            // завершении ~= serviceModelSec; при досрочном пробуждении (pause/stop/
+            // ТО прервали ожидание) — меньше. Нужно для честного учёта загрузки ниже.
+            const double actualServiceModelSec =
+                std::chrono::duration<double>(Clock::now() - serviceStart).count() *
+                cfg_.simulation.timeScale;
 
             // Операцию доводим до конца в любом случае (§4.6 по умолчанию —
             // «доработать текущую»): мы не ждём остаток задержки, но результат
@@ -261,7 +269,13 @@ void AtmEngine::run() {
             ++totalServed_;
             sumWaitModel_ += waitedModel;
             sumServiceModel_ += serviceModelSec;
-            busyModel_ += serviceModelSec;
+            // В загрузку (utilization = busy/uptime) кредитуем ФАКТИЧЕСКИ прошедшее
+            // модельное время, а не номинал: иначе прерывание длинной операции
+            // приписывало бы банкомату больше «занятого» времени, чем прошло с его
+            // старта, и utilization могла превысить 1.0. min — страховка от джиттера
+            // планировщика при штатном завершении. sumServiceModel_ (среднее время
+            // обслуживания) остаётся номинальным — это самостоятельная метрика.
+            busyModel_ += std::min(actualServiceModelSec, serviceModelSec);
             cashAfter = cashbox_.balance();
             currentClient_.reset();
 
