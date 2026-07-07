@@ -415,11 +415,13 @@ void AtmEngine::applyMaintenanceRenegingLocked() {
 
 bool AtmEngine::allClientsProcessed() const {
     std::lock_guard<std::mutex> lock(mutex_);
-    // Все клиенты сгенерированы (поток прихода отработал), никого нет в очереди и
-    // на обслуживании, и число «обслужен + ушёл» покрывает всех сгенерированных.
-    return generatedCount_ >= cfg_.clients.count && queue_.empty() &&
-           !currentClient_.has_value() &&
-           (totalServed_ + totalLeft_) >= static_cast<std::uint64_t>(generatedCount_);
+    // Каждый из cfg_.clients.count клиентов заканчивает ровно в одном терминальном
+    // состоянии — обслужен или ушёл, — поэтому равенство «обслужено + ушли == всего»
+    // само по себе означает, что в очереди и на обслуживании никого не осталось.
+    // Считаем ТОЛЬКО lock-защищённые счётчики (totalServed_/totalLeft_) и const-
+    // конфиг. generatedCount_ читать нельзя: его без мьютекса ведёт поток прихода
+    // (иначе гонка данных — ловится ThreadSanitizer).
+    return (totalServed_ + totalLeft_) >= static_cast<std::uint64_t>(cfg_.clients.count);
 }
 
 // ---------------------------------------------------------------------------

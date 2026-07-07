@@ -57,6 +57,7 @@ void AdminConsole::printHelp() const {
         "  maintenance start [сек] / stop    — техобслуживание\n"
         "  live / live off                   — включить / выключить живой дашборд\n"
         "  export <file>                     — выгрузить журнал операций в CSV\n"
+        "  restart                           — новый прогон с нуля\n"
         "  stop                              — плавно остановить и выйти\n";
 }
 
@@ -203,7 +204,7 @@ bool AdminConsole::dispatchReport(const Command& c) const {
 // ---------------------------------------------------------------------------
 //  Главный цикл: переключение режимов
 // ---------------------------------------------------------------------------
-void AdminConsole::run() {
+AdminConsole::RunOutcome AdminConsole::run() {
     ttyAnsi_ = Terminal::isStdoutTty();
     if (ttyAnsi_) Terminal::enableAnsi();
     if (cfg_.ui.liveMode && !ttyAnsi_) {
@@ -213,9 +214,10 @@ void AdminConsole::run() {
     Next next = (cfg_.ui.liveMode && ttyAnsi_) ? Next::Live : Next::Command;
     if (next == Next::Command) printHelp();
 
-    while (next != Next::Quit) {
+    while (next != Next::Quit && next != Next::Restart) {
         next = (next == Next::Live) ? runLiveSession() : runCommandLoop();
     }
+    return (next == Next::Restart) ? RunOutcome::Restart : RunOutcome::Quit;
 }
 
 // ---------------------------------------------------------------------------
@@ -225,6 +227,9 @@ AdminConsole::Next AdminConsole::runCommandLoop() {
     std::cout << "\n[командный режим] help — команды, live — дашборд, stop — выход\n";
     std::string line;
     while (true) {
+        if (engine_.allClientsProcessed()) {
+            std::cout << "\n(все клиенты обслужены — restart для нового прогона, stop для выхода)\n";
+        }
         std::cout << "\n> " << std::flush;
         if (!std::getline(std::cin, line)) return Next::Quit;
 
@@ -245,6 +250,9 @@ AdminConsole::Next AdminConsole::runCommandLoop() {
                 std::cout << "Живой режим недоступен: stdout не терминал.\n";
                 break;
             case CommandType::LiveOff: break;  // уже в командном режиме
+            case CommandType::Restart:
+                std::cout << "Перезапуск прогона...\n";
+                return Next::Restart;
             case CommandType::Stop:
                 std::cout << "Останавливаюсь...\n";
                 engine_.requestStop();
@@ -398,6 +406,12 @@ AdminConsole::Next AdminConsole::runLiveSession() {
                 // В живом режиме очередь листаем интерактивно (стрелки/PgUp/PgDn),
                 // а не показываем статичным полноэкранным списком.
                 showQueueInteractive(renderer);
+                break;
+            case CommandType::Restart:
+                // Выходим с исходом Restart; текущий движок остановит и пересоздаст
+                // main (мы лишь сигналим о намерении).
+                result = Next::Restart;
+                exitLoop = true;
                 break;
             case CommandType::Stop:
                 engine_.requestStop();

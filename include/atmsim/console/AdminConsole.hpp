@@ -22,12 +22,16 @@ class AdminConsole {
 public:
     AdminConsole(AtmEngine& engine, const Config& cfg);
 
-    // Главный цикл: переключается между командным и живым режимами, пока не stop/EOF.
-    void run();
+    // Итог сессии для вызывающего (main): просто выйти или перезапустить прогон.
+    enum class RunOutcome { Quit, Restart };
+
+    // Главный цикл: переключается между командным и живым режимами, пока не
+    // stop/EOF (RunOutcome::Quit) или команда restart (RunOutcome::Restart).
+    RunOutcome run();
 
 private:
     // Что делать после выхода из одного из режимов.
-    enum class Next { Command, Live, Quit };
+    enum class Next { Command, Live, Quit, Restart };
 
     Next runCommandLoop();   // pull-REPL; -> Live (по live) или Quit
     Next runLiveSession();   // живой дашборд; -> Command (по live off) или Quit

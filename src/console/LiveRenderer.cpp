@@ -269,9 +269,17 @@ std::vector<std::string> LiveRenderer::composeLines() const {
     // === Нижний разделитель (┴) + подсказка команд ===
     L.push_back(C(ansi::grey()) + repeatUtf8("─", leftW + 1) + "┴" +
                 repeatUtf8("─", width_ - leftW - 2) + R());
-    L.push_back(fit(C(ansi::grey()) +
-                    "команды: pause · resume · maintenance N|stop · client N · queue · "
-                    "stats · export F · live off · stop" + R(), width_));
+    // Подвал: обычно — подсказка команд; когда все клиенты отработаны — баннер
+    // завершения с предложением действий. Обе ветки дают РОВНО одну строку,
+    // поэтому высота кадра остаётся постоянной (§4.8.5).
+    if (engine_.allClientsProcessed()) {
+        L.push_back(fit(C(ansi::green()) + "✓ Симуляция завершена" + R() + C(ansi::grey()) +
+                        "  —  restart: новый прогон · stop: выход" + R(), width_));
+    } else {
+        L.push_back(fit(C(ansi::grey()) +
+                        "команды: pause · resume · maintenance N|stop · client N · queue · "
+                        "stats · export F · live off · stop" + R(), width_));
+    }
 
     return L;
 }

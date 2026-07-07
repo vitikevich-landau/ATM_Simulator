@@ -35,46 +35,69 @@ int main(int argc, char** argv) {
         std::cout << "Конфиг: " << path << "  |  клиентов: " << cfg.clients.count
                   << "  |  лог: " << cfg.logging.file << "\n";
 
-        AtmEngine engine(cfg, &logger);
         installSignalHandlers();  // SIGINT/SIGTERM -> плавная остановка (§4.6)
 
-        // Обычные std::thread (не jthread): останавливаем явно через
-        // engine.requestStop() перед join(). Причина отказа от jthread/stop_token —
-        // несовместимость связки со stop_token на ряде версий MSVC (см. AtmEngine.hpp).
-        std::thread engineThread([&engine] { engine.run(); });
-        std::thread arrivalThread([&engine] { engine.generateArrivals(); });
+        // Цикл прогонов: команда restart возвращает RunOutcome::Restart, и мы
+        // пересоздаём движок «с нуля». Каждый перезапуск меняет seed, чтобы прогон
+        // получился другим (тот же seed дал бы идентичный результат, §5).
+        auto seed = cfg.simulation.randomSeed;
+        int runIndex = 1;
+        AdminConsole::RunOutcome outcome = AdminConsole::RunOutcome::Restart;
+        while (outcome == AdminConsole::RunOutcome::Restart) {
+            Config runCfg = cfg;
+            runCfg.simulation.randomSeed = seed;
 
-        AdminConsole console(engine, cfg);
-        console.run();  // блокирует до stop/EOF/сигнала
+            AtmEngine engine(runCfg, &logger);
 
-        if (shutdownRequested()) {
-            logger.info("Получен сигнал остановки (SIGINT/SIGTERM)");
-            std::cout << "\n(получен сигнал остановки — завершаюсь плавно)\n";
+            // Обычные std::thread (не jthread): останавливаем явно через
+            // engine.requestStop() перед join(). Причина отказа от jthread/stop_token
+            // — несовместимость со stop_token на ряде версий MSVC (см. AtmEngine.hpp).
+            std::thread engineThread([&engine] { engine.run(); });
+            std::thread arrivalThread([&engine] { engine.generateArrivals(); });
+
+            AdminConsole console(engine, runCfg);
+            outcome = console.run();  // блокирует до stop/EOF/сигнала/restart
+
+            if (shutdownRequested()) {
+                logger.info("Получен сигнал остановки (SIGINT/SIGTERM)");
+                std::cout << "\n(получен сигнал остановки — завершаюсь плавно)\n";
+                outcome = AdminConsole::RunOutcome::Quit;  // сигнал важнее restart
+            }
+
+            engine.requestStop();  // переводит потоки в Stopped и будит их
+            engineThread.join();
+            arrivalThread.join();
+
+            // --- Итог прогона (§4.4, §10) ---
+            const StatsSnapshot st = engine.statsSnapshot();
+            logger.info("Итог прогона #" + std::to_string(runIndex) + ": обслужено " +
+                        std::to_string(st.served) + ", ушли " + std::to_string(st.left));
+
+            if (outcome == AdminConsole::RunOutcome::Restart) {
+                // Краткая строка-разделитель; полный блок печатаем только при выходе.
+                std::cout << "\n── Прогон #" << runIndex << " завершён (обслужено "
+                          << st.served << ", ушли " << st.left << "). Перезапуск… ──\n";
+                ++runIndex;
+                ++seed;
+                continue;
+            }
+
+            const AtmSnapshot s = engine.snapshot();
+            std::cout << std::fixed << std::setprecision(1);
+            std::cout << "\n=== Итоговая статистика ===\n";
+            std::cout << "Обслужено:            " << st.served << '\n';
+            std::cout << "Ушли (всего):         " << st.left
+                      << "  (из них по ТО: " << st.renegedByMaintenance << ")\n";
+            std::cout << "Среднее ожидание:     " << st.avgWaitSeconds << " c\n";
+            std::cout << "Среднее обслуживание: " << st.avgServiceSeconds << " c\n";
+            std::cout << "Макс. длина очереди:  " << st.maxQueueLength << '\n';
+            std::cout << std::setprecision(2) << "Загрузка ρ = λ/μ:     " << st.rhoTheoretical << '\n';
+            std::cout << "Факт. загрузка:       " << st.utilization << '\n';
+            std::cout << std::setprecision(0) << "Аптайм:               " << st.uptimeSeconds << " c\n";
+            std::cout.unsetf(std::ios::floatfield);
+            std::cout << "Касса:                " << formatMoney(s.cashboxBalance) << ' '
+                      << cfg.atm.currency << '\n';
         }
-
-        engine.requestStop();  // переводит потоки в Stopped и будит их
-        engineThread.join();
-        arrivalThread.join();
-
-        // --- Итоговая статистика СМО (§4.4, §10) ---
-        const StatsSnapshot st = engine.statsSnapshot();
-        const AtmSnapshot s = engine.snapshot();
-        std::cout << std::fixed << std::setprecision(1);
-        std::cout << "\n=== Итоговая статистика ===\n";
-        std::cout << "Обслужено:            " << st.served << '\n';
-        std::cout << "Ушли (всего):         " << st.left
-                  << "  (из них по ТО: " << st.renegedByMaintenance << ")\n";
-        std::cout << "Среднее ожидание:     " << st.avgWaitSeconds << " c\n";
-        std::cout << "Среднее обслуживание: " << st.avgServiceSeconds << " c\n";
-        std::cout << "Макс. длина очереди:  " << st.maxQueueLength << '\n';
-        std::cout << std::setprecision(2) << "Загрузка ρ = λ/μ:     " << st.rhoTheoretical << '\n';
-        std::cout << "Факт. загрузка:       " << st.utilization << '\n';
-        std::cout << std::setprecision(0) << "Аптайм:               " << st.uptimeSeconds << " c\n";
-        std::cout.unsetf(std::ios::floatfield);
-        std::cout << "Касса:                " << formatMoney(s.cashboxBalance) << ' ' << cfg.atm.currency << '\n';
-
-        logger.info("Итог: обслужено " + std::to_string(st.served) +
-                    ", ушли " + std::to_string(st.left));
     } catch (const ConfigError& e) {
         std::cerr << "Ошибка конфигурации: " << e.what() << '\n';
         return 1;
