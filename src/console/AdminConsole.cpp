@@ -312,7 +312,7 @@ void AdminConsole::showQueueInteractive(LiveRenderer& renderer) {
         {
             std::lock_guard<std::mutex> lk(renderer.outputMutex());
             std::ostringstream os;
-            os << ansi::clearScreen() << ansi::home();
+            os << ansi::hideCursor() << ansi::clearScreen() << ansi::home();  // курсор не мельтешит
             os << ansi::bold() << "Очередь: " << total << " клиент(ов)" << ansi::reset();
             if (total > viewRows) {
                 os << ansi::grey() << "   показаны " << (offset + 1) << "–"
@@ -353,7 +353,7 @@ void AdminConsole::showQueueInteractive(LiveRenderer& renderer) {
 
     {
         std::lock_guard<std::mutex> lk(renderer.outputMutex());
-        std::cout << ansi::clearScreen() << std::flush;
+        std::cout << ansi::clearScreen() << ansi::showCursor() << std::flush;  // курсор обратно
     }
     renderer.resume();
 }

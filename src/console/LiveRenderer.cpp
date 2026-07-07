@@ -278,13 +278,20 @@ std::vector<std::string> LiveRenderer::composeLines() const {
 
 void LiveRenderer::paintFrame() {
     const std::vector<std::string> lines = composeLines();
-    std::string out = ansi::saveCursor();  // запомнить, где стоит курсор ввода
+    // Прячем курсор на ВСЁ время перерисовки. Иначе, пока мы гоняем его по строкам
+    // кадра (moveTo на каждую строку), физический курсор терминала прыгал бы по
+    // экрану и визуально «мелькал» в разных местах таблицы. Порядок: hideCursor ->
+    // сохранить позицию ввода -> нарисовать кадр -> вернуть курсор в позицию ввода
+    // -> showCursor. В итоге курсор виден только в строке ввода и не скачет.
+    std::string out = ansi::hideCursor();
+    out += ansi::saveCursor();  // запомнить, где стоит курсор ввода
     for (std::size_t i = 0; i < lines.size(); ++i) {
         out += ansi::moveTo(static_cast<int>(i) + 1, 1);
         out += lines[i];
         out += ansi::clearToLineEnd();
     }
     out += ansi::restoreCursor();
+    out += ansi::showCursor();
 
     std::lock_guard<std::mutex> lock(outMutex_);
     // Повторная проверка ПОД локом. Между «if(!paused_)» в renderLoop и этим
