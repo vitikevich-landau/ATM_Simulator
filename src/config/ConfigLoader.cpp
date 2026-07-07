@@ -36,8 +36,12 @@ void validate(const Config& c) {
     if (w.checkBalance + w.withdraw + w.deposit <= 0.0) {
         throw ConfigError("сумма весов операций должна быть больше нуля");
     }
-    if (c.clients.amountRange.min < 0 || c.clients.amountRange.min > c.clients.amountRange.max) {
-        throw ConfigError("некорректный amount_range (нужно 0 <= min <= max)");
+    // min >= 1, а не >= 0: суммы из этого диапазона идут в снятие/внесение, а те
+    // при amount <= 0 дают InvalidAmount (Operation.cpp). Ноль в диапазоне породил
+    // бы клиентов с гарантированно проваленной операцией. (CheckBalance ставит
+    // сумму 0 сам, в обход диапазона, поэтому его это не затрагивает.)
+    if (c.clients.amountRange.min < 1 || c.clients.amountRange.min > c.clients.amountRange.max) {
+        throw ConfigError("некорректный amount_range (нужно 1 <= min <= max)");
     }
     if (c.clients.patienceSeconds.min < 0 ||
         c.clients.patienceSeconds.min > c.clients.patienceSeconds.max) {

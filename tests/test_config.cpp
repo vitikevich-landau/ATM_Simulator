@@ -93,6 +93,18 @@ TEST(config_rejects_inverted_amount_range) {
     CHECK(threw);
 }
 
+// amount_range.min == 0 недопустим: сумма 0 в снятии/внесении даёт InvalidAmount,
+// то есть гарантированно проваленную операцию (нужно 1 <= min).
+TEST(config_rejects_zero_amount_min) {
+    bool threw = false;
+    try {
+        ConfigLoader::loadFromString(R"({"clients": {"amount_range": {"min": 0, "max": 1000}}})");
+    } catch (const ConfigError&) {
+        threw = true;
+    }
+    CHECK(threw);
+}
+
 // Отрицательный stddev недопустим при любом распределении (уходит в
 // std::normal_distribution, precondition которого stddev > 0).
 TEST(config_rejects_negative_stddev) {

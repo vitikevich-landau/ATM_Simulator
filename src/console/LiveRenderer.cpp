@@ -15,7 +15,10 @@ namespace {
 
 // Форматирует секунды как HH:MM:SS.
 std::string hms(double seconds) {
-    long total = static_cast<long>(seconds < 0 ? 0 : seconds);
+    // long long (>= 64 бит везде), а не long: на Windows (LLP64) long — 32 бита,
+    // и модельный аптайм (реальные секунды * time_scale) при заметном ускорении
+    // времени переполнил бы его за часы прогона, дав отрицательное HH:MM:SS.
+    long long total = static_cast<long long>(seconds < 0 ? 0 : seconds);
     std::ostringstream os;
     os << std::setfill('0') << std::setw(2) << (total / 3600) << ':'
        << std::setw(2) << ((total % 3600) / 60) << ':' << std::setw(2) << (total % 60);
