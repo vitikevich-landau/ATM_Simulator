@@ -134,15 +134,19 @@ Key readKey(char& ch) {
         switch (_getch()) {
             case 72: return Key::Up;
             case 80: return Key::Down;
+            case 75: return Key::Left;
+            case 77: return Key::Right;
             case 73: return Key::PageUp;
             case 81: return Key::PageDown;
             case 71: return Key::Home;
             case 79: return Key::End;
+            case 83: return Key::Delete;
             default: return Key::None;
         }
     }
     if (c == EOF) return Key::Eof;
     if (c == '\r' || c == '\n') return Key::Enter;
+    if (c == 8) return Key::Backspace;  // Backspace на Windows
     if (c == 27) return Key::Escape;
     ch = static_cast<char>(c);
     return Key::Char;
@@ -150,6 +154,7 @@ Key readKey(char& ch) {
     char c = 0;
     if (::read(STDIN_FILENO, &c, 1) <= 0) return Key::Eof;
     if (c == '\r' || c == '\n') return Key::Enter;
+    if (c == 0x7F || c == 0x08) return Key::Backspace;  // DEL/BS от клавиши Backspace
     if (c == 0x1B) {  // ESC: либо выход, либо начало CSI-последовательности стрелки
         if (!stdinPending(20)) return Key::Escape;  // одиночный ESC
         char b1 = 0;
@@ -160,8 +165,11 @@ Key readKey(char& ch) {
         switch (b2) {
             case 'A': return Key::Up;
             case 'B': return Key::Down;
+            case 'C': return Key::Right;
+            case 'D': return Key::Left;
             case 'H': return Key::Home;
             case 'F': return Key::End;
+            case '3': { char t; if (stdinPending(20)) (void)::read(STDIN_FILENO, &t, 1); return Key::Delete; }    // ESC[3~
             case '5': { char t; if (stdinPending(20)) (void)::read(STDIN_FILENO, &t, 1); return Key::PageUp; }    // ESC[5~
             case '6': { char t; if (stdinPending(20)) (void)::read(STDIN_FILENO, &t, 1); return Key::PageDown; }  // ESC[6~
             default:  return Key::None;
@@ -177,6 +185,34 @@ int clampScrollOffset(int offset, int total, int viewRows) {
     if (offset < 0) return 0;
     if (offset > maxOff) return maxOff;
     return offset;
+}
+
+LineEdit editLine(std::string& buf, std::size_t& cur, Key key, char ch) {
+    if (cur > buf.size()) cur = buf.size();  // страховка от рассинхрона
+    switch (key) {
+        case Key::Enter:  return LineEdit::Submit;
+        case Key::Eof:    return LineEdit::Cancel;
+        case Key::Char:
+            buf.insert(buf.begin() + static_cast<std::ptrdiff_t>(cur), ch);
+            ++cur;
+            break;
+        case Key::Backspace:
+            if (cur > 0) {
+                buf.erase(buf.begin() + static_cast<std::ptrdiff_t>(cur - 1));
+                --cur;
+            }
+            break;
+        case Key::Delete:
+            if (cur < buf.size()) buf.erase(buf.begin() + static_cast<std::ptrdiff_t>(cur));
+            break;
+        case Key::Left:  if (cur > 0) --cur; break;
+        case Key::Right: if (cur < buf.size()) ++cur; break;
+        case Key::Home:  cur = 0; break;
+        case Key::End:   cur = buf.size(); break;
+        case Key::Escape: buf.clear(); cur = 0; break;  // очистить строку
+        default: break;  // None, PageUp/Down, ↑/↓ — в строке ввода игнорируем
+    }
+    return LineEdit::Continue;
 }
 
 }  // namespace atmsim

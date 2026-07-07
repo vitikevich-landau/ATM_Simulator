@@ -7,6 +7,7 @@
 //  Остальной код рисует дашборд обычными ANSI-последовательностями, не зная,
 //  на какой ОС он работает.
 // ============================================================================
+#include <cstddef>
 #include <string>
 
 namespace atmsim {
@@ -28,7 +29,10 @@ public:
 // --- Интерактивный ввод (raw-режим) — §4.8 v2: горячие клавиши / прокрутка ------
 // Распознаваемые клавиши. Char — обычный печатный символ (возвращается отдельно),
 // None — нераспознанная управляющая, Eof — ввод закрыт.
-enum class Key { None, Char, Enter, Escape, Up, Down, PageUp, PageDown, Home, End, Eof };
+enum class Key {
+    None, Char, Enter, Escape, Backspace, Delete,
+    Up, Down, Left, Right, PageUp, PageDown, Home, End, Eof
+};
 
 // RAII-перевод stdin в raw-режим (без построчной буферизации и эха) на время жизни
 // объекта; деструктор восстанавливает исходный режим. На Windows ввод читается
@@ -53,6 +57,15 @@ Key readKey(char& ch);
 // Ограничивает смещение прокрутки списка диапазоном [0, max(0, total - viewRows)].
 // Вынесено отдельной чистой функцией ради юнит-тестов пагинации.
 int clampScrollOffset(int offset, int total, int viewRows);
+
+// Результат применения клавиши к редактируемой строке ввода.
+enum class LineEdit { Continue, Submit, Cancel };
+
+// Применяет одну клавишу к строке buf и позиции курсора cur (в байтах): печатный
+// символ вставляется по позиции курсора, Backspace/Delete удаляют, стрелки ←/→ и
+// Home/End двигают курсор, Esc очищает строку. Возвращает Submit при Enter,
+// Cancel при Eof, иначе Continue. Чистая функция — покрыта юнит-тестами.
+LineEdit editLine(std::string& buf, std::size_t& cur, Key key, char ch);
 
 // --- ANSI-последовательности управления терминалом --------------------------
 // Escape-код 0x1B записываем восьмеричным "\033". Функции возвращают короткие

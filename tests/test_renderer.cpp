@@ -125,6 +125,52 @@ TEST(terminal_clamp_scroll_offset) {
     CHECK_EQ(clampScrollOffset(3, 0, 10), 0);
 }
 
+// Редактирование строки ввода (raw-режим): вставка, ←/→, Home/End, Backspace,
+// Delete, Esc, Enter, Eof. Именно эта «чистая» логика лечит артефакты ввода.
+TEST(terminal_edit_line) {
+    std::string buf;
+    std::size_t cur = 0;
+
+    CHECK(editLine(buf, cur, Key::Char, 'a') == LineEdit::Continue);
+    editLine(buf, cur, Key::Char, 'b');
+    editLine(buf, cur, Key::Char, 'c');
+    CHECK_EQ(buf, std::string("abc"));
+    CHECK_EQ(cur, static_cast<std::size_t>(3));
+
+    // ← и вставка в середину (главный баг-кейс: вернулся и печатаю).
+    editLine(buf, cur, Key::Left, 0);        // cur = 2
+    editLine(buf, cur, Key::Char, 'X');      // "abXc", cur = 3
+    CHECK_EQ(buf, std::string("abXc"));
+    CHECK_EQ(cur, static_cast<std::size_t>(3));
+
+    editLine(buf, cur, Key::Backspace, 0);   // "abc", cur = 2
+    CHECK_EQ(buf, std::string("abc"));
+    CHECK_EQ(cur, static_cast<std::size_t>(2));
+
+    editLine(buf, cur, Key::Home, 0);        // cur = 0
+    CHECK_EQ(cur, static_cast<std::size_t>(0));
+    editLine(buf, cur, Key::Delete, 0);      // "bc"
+    CHECK_EQ(buf, std::string("bc"));
+    CHECK_EQ(cur, static_cast<std::size_t>(0));
+
+    editLine(buf, cur, Key::End, 0);         // cur = 2
+    CHECK_EQ(cur, static_cast<std::size_t>(2));
+
+    // Границы не падают: Backspace при cur=0, Delete в конце.
+    std::string e; std::size_t ec = 0;
+    editLine(e, ec, Key::Backspace, 0);
+    CHECK(e.empty());
+    editLine(buf, cur, Key::Delete, 0);      // cur в конце — no-op
+    CHECK_EQ(buf, std::string("bc"));
+
+    editLine(buf, cur, Key::Escape, 0);      // очистка строки
+    CHECK(buf.empty());
+    CHECK_EQ(cur, static_cast<std::size_t>(0));
+
+    CHECK(editLine(buf, cur, Key::Enter, 0) == LineEdit::Submit);
+    CHECK(editLine(buf, cur, Key::Eof, 0) == LineEdit::Cancel);
+}
+
 // Полный жизненный цикл render-потока: старт, перерисовка, пауза/возобновление,
 // остановка (в т.ч. повторная) и разрушение. Именно этот путь ловил MSVC как
 // «порчу стека вокруг renderer». Здесь проверяем его под ASan/TSan; вывод

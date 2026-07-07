@@ -62,6 +62,14 @@ private:
     // недоступен (не терминал) — деградирует до статического списка.
     void showQueueInteractive(LiveRenderer& renderer);
 
+    // Читает строку команды в live-режиме в RAW-режиме с СОБСТВЕННЫМ эхом и
+    // редактированием (←/→, Home/End, Backspace, Delete, Esc — очистить). Строку
+    // ввода рисуем только мы, синхронно с рендер-потоком под outputMutex_, поэтому
+    // нет конфликта с эхом терминала (иначе — пропадающие символы и порча
+    // приглашения, §4.8). inputRow — строка экрана под ввод. Возвращает false при
+    // EOF/сигнале. Если stdin не терминал — обычный getline (fallback).
+    bool readCommandLineRaw(LiveRenderer& renderer, int inputRow, std::string& out);
+
     AtmEngine& engine_;
     Config cfg_;
     bool ttyAnsi_{false};  // stdout — интерактивный терминал (можно live-режим)

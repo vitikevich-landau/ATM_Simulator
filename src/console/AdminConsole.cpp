@@ -366,6 +366,38 @@ void AdminConsole::showQueueInteractive(LiveRenderer& renderer) {
     renderer.resume();
 }
 
+bool AdminConsole::readCommandLineRaw(LiveRenderer& renderer, int inputRow, std::string& out) {
+    RawInputMode raw;
+    if (!raw.active()) {
+        // stdin не терминал — без raw-редактора, обычный построчный ввод.
+        {
+            std::lock_guard<std::mutex> lk(renderer.outputMutex());
+            std::cout << ansi::moveTo(inputRow, 1) << ansi::clearToLineEnd() << "cmd> " << std::flush;
+        }
+        return static_cast<bool>(std::getline(std::cin, out));
+    }
+
+    const std::string prompt = "cmd> ";
+    std::string buf;
+    std::size_t cur = 0;
+    for (;;) {
+        // Рисуем строку ввода САМИ (в raw-режиме терминал не эхоит) и ставим курсор
+        // в позицию редактирования. Всё под outputMutex_ — синхронно с кадрами.
+        {
+            std::lock_guard<std::mutex> lk(renderer.outputMutex());
+            std::ostringstream os;
+            os << ansi::moveTo(inputRow, 1) << ansi::clearToLineEnd() << prompt << buf
+               << ansi::moveTo(inputRow, static_cast<int>(prompt.size() + cur) + 1);
+            std::cout << os.str() << std::flush;
+        }
+        char ch = 0;
+        const Key k = readKey(ch);
+        const LineEdit r = editLine(buf, cur, k, ch);
+        if (r == LineEdit::Submit) { out = buf; return true; }
+        if (r == LineEdit::Cancel) { out.clear(); return false; }
+    }
+}
+
 AdminConsole::Next AdminConsole::runLiveSession() {
     LiveRenderer renderer(engine_, cfg_);
     const int inputRow = renderer.height() + 2;  // строка ввода — НИЖЕ дашборда
@@ -380,13 +412,11 @@ AdminConsole::Next AdminConsole::runLiveSession() {
     std::string line;
     bool exitLoop = false;
     while (!exitLoop) {
-        // Рисуем строку ввода внизу. Рендерер её не трогает (пишет только выше),
-        // поэтому набираемый текст не затирается очередным кадром (§4.8.5).
-        {
-            std::lock_guard<std::mutex> lk(renderer.outputMutex());
-            std::cout << ansi::moveTo(inputRow, 1) << ansi::clearToLineEnd() << "cmd> " << std::flush;
-        }
-        if (!std::getline(std::cin, line)) { result = Next::Quit; break; }
+        // Ввод команды — в raw-режиме с собственным эхом (readCommandLineRaw рисует
+        // строку ввода сам, под outputMutex_). Так набор не конфликтует с кадрами
+        // рендерера: символы не пропадают, приглашение не портится, работает
+        // редактирование ←/→/Backspace (§4.8: раньше cooked-эхо давало артефакты).
+        if (!readCommandLineRaw(renderer, inputRow, line)) { result = Next::Quit; break; }
 
         const Command c = parseCommand(line);
         if (!c.error.empty()) {
