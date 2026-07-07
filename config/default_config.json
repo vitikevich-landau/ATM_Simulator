@@ -8,13 +8,13 @@
     "arrival_mode": "poisson",
     "arrival_rate_per_minute": 4.0,
     "count": 50,
-    "initial_balance": 2500000,
+    "initial_balance": 500000,
     "operation_weights": {
       "check_balance": 0.3,
       "withdraw": 0.5,
       "deposit": 0.2
     },
-    "amount_range": { "min": 50000, "max": 3000000 },
+    "amount_range": { "min": 20000, "max": 300000 },
     "patience_seconds": { "min": 30, "max": 300 }
   },
   "service_time": {
