@@ -383,11 +383,15 @@ bool AdminConsole::readCommandLineRaw(LiveRenderer& renderer, int inputRow, std:
     for (;;) {
         // Рисуем строку ввода САМИ (в raw-режиме терминал не эхоит) и ставим курсор
         // в позицию редактирования. Всё под outputMutex_ — синхронно с кадрами.
+        // Ту же позицию сообщаем рендереру, чтобы его кадры возвращали курсор сюда
+        // же, а не в таблицу.
+        const int cursorCol = static_cast<int>(prompt.size() + cur) + 1;
+        renderer.setCursorTarget(inputRow, cursorCol);
         {
             std::lock_guard<std::mutex> lk(renderer.outputMutex());
             std::ostringstream os;
             os << ansi::moveTo(inputRow, 1) << ansi::clearToLineEnd() << prompt << buf
-               << ansi::moveTo(inputRow, static_cast<int>(prompt.size() + cur) + 1);
+               << ansi::moveTo(inputRow, cursorCol);
             std::cout << os.str() << std::flush;
         }
         char ch = 0;
@@ -401,6 +405,9 @@ bool AdminConsole::readCommandLineRaw(LiveRenderer& renderer, int inputRow, std:
 AdminConsole::Next AdminConsole::runLiveSession() {
     LiveRenderer renderer(engine_, cfg_);
     const int inputRow = renderer.height() + 2;  // строка ввода — НИЖЕ дашборда
+    // Куда рендер-поток будет возвращать курсор: строка ввода, сразу за «cmd> ».
+    // Задаём ДО start(), чтобы даже первый кадр не поставил курсор в таблицу.
+    renderer.setCursorTarget(inputRow, 6);
 
     {
         std::lock_guard<std::mutex> lk(renderer.outputMutex());

@@ -286,19 +286,19 @@ std::vector<std::string> LiveRenderer::composeLines() const {
 
 void LiveRenderer::paintFrame() {
     const std::vector<std::string> lines = composeLines();
-    // Прячем курсор на ВСЁ время перерисовки. Иначе, пока мы гоняем его по строкам
-    // кадра (moveTo на каждую строку), физический курсор терминала прыгал бы по
-    // экрану и визуально «мелькал» в разных местах таблицы. Порядок: hideCursor ->
-    // сохранить позицию ввода -> нарисовать кадр -> вернуть курсор в позицию ввода
-    // -> showCursor. В итоге курсор виден только в строке ввода и не скачет.
+    // Прячем курсор на время перерисовки (иначе, гоняя его по строкам кадра через
+    // moveTo, мы бы видели его «пробег» по таблице). Рисуем дашборд, затем ЯВНО
+    // ставим курсор в позицию ВВОДА (её сообщает консоль через setCursorTarget) и
+    // показываем. Явная установка, а не save/restore, важна на переходах: после
+    // clearScreen (старт live-режима, закрытие отчёта/очереди) сохранённая позиция
+    // была бы (1,1) — курсор «прыгал» в таблицу, пока не перерисуется строка ввода.
     std::string out = ansi::hideCursor();
-    out += ansi::saveCursor();  // запомнить, где стоит курсор ввода
     for (std::size_t i = 0; i < lines.size(); ++i) {
         out += ansi::moveTo(static_cast<int>(i) + 1, 1);
         out += lines[i];
         out += ansi::clearToLineEnd();
     }
-    out += ansi::restoreCursor();
+    out += ansi::moveTo(cursorRow_.load(), cursorCol_.load());
     out += ansi::showCursor();
 
     std::lock_guard<std::mutex> lock(outMutex_);
