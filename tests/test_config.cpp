@@ -92,3 +92,57 @@ TEST(config_rejects_inverted_amount_range) {
     }
     CHECK(threw);
 }
+
+// Отрицательный stddev недопустим при любом распределении (уходит в
+// std::normal_distribution, precondition которого stddev > 0).
+TEST(config_rejects_negative_stddev) {
+    bool threw = false;
+    try {
+        ConfigLoader::loadFromString(
+            R"({"service_time": {"distribution": "normal",
+                "params": {"mean_seconds": 25, "stddev_seconds": -1}}})");
+    } catch (const ConfigError&) {
+        threw = true;
+    }
+    CHECK(threw);
+}
+
+// Для normal нужен СТРОГО положительный stddev — ноль тоже отвергаем.
+TEST(config_rejects_zero_stddev_for_normal) {
+    bool threw = false;
+    try {
+        ConfigLoader::loadFromString(
+            R"({"service_time": {"distribution": "normal",
+                "params": {"mean_seconds": 25, "stddev_seconds": 0}}})");
+    } catch (const ConfigError&) {
+        threw = true;
+    }
+    CHECK(threw);
+}
+
+// renege_probability вне [0, 1] недопустимо (уходит в bernoulli_distribution).
+TEST(config_rejects_renege_probability_out_of_range) {
+    bool threwHigh = false;
+    try {
+        ConfigLoader::loadFromString(R"({"maintenance": {"renege_probability": 1.5}})");
+    } catch (const ConfigError&) {
+        threwHigh = true;
+    }
+    CHECK(threwHigh);
+
+    bool threwLow = false;
+    try {
+        ConfigLoader::loadFromString(R"({"maintenance": {"renege_probability": -0.1}})");
+    } catch (const ConfigError&) {
+        threwLow = true;
+    }
+    CHECK(threwLow);
+}
+
+// Границы диапазона (0.0 и 1.0) допустимы и не бросают.
+TEST(config_accepts_boundary_renege_probability) {
+    const Config lo = ConfigLoader::loadFromString(R"({"maintenance": {"renege_probability": 0.0}})");
+    CHECK(lo.maintenance.renegeProbability == 0.0);
+    const Config hi = ConfigLoader::loadFromString(R"({"maintenance": {"renege_probability": 1.0}})");
+    CHECK(hi.maintenance.renegeProbability == 1.0);
+}

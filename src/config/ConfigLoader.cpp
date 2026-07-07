@@ -52,18 +52,33 @@ void validate(const Config& c) {
     if (c.atm.initialCash < 0 || c.atm.lowCashThreshold < 0) {
         throw ConfigError("значения кассы не могут быть отрицательными");
     }
-    if (c.serviceTime.minSeconds < 0 || c.serviceTime.meanSeconds < 0) {
+    if (c.serviceTime.minSeconds < 0 || c.serviceTime.meanSeconds < 0 ||
+        c.serviceTime.stddevSeconds < 0) {
         throw ConfigError("параметры времени обслуживания не могут быть отрицательными");
     }
     if (c.serviceTime.distribution == ServiceDistribution::Uniform &&
         c.serviceTime.minSeconds > c.serviceTime.maxSeconds) {
         throw ConfigError("для uniform нужно min_seconds <= max_seconds");
     }
+    // Для нормального распределения std::normal_distribution требует СТРОГО
+    // положительный stddev — это precondition стандарта ([rand.dist.norm.normal]),
+    // при нарушении поведение не определено. Ноль дал бы вырожденное распределение
+    // (всегда mean), отрицательный — формальный UB. Ловим здесь, до движка.
+    if (c.serviceTime.distribution == ServiceDistribution::Normal &&
+        c.serviceTime.stddevSeconds <= 0.0) {
+        throw ConfigError("для normal нужно stddev_seconds > 0");
+    }
     if (c.ui.refreshHz < 1) {
         throw ConfigError("ui.refresh_hz должен быть >= 1");
     }
     if (c.simulation.timeScale <= 0.0) {
         throw ConfigError("time_scale должен быть больше нуля");
+    }
+    // renege_probability уходит прямо в std::bernoulli_distribution, precondition
+    // которого — вероятность в диапазоне [0, 1]; вне диапазона поведение стандартом
+    // не определено. Проверяем здесь, чтобы битый конфиг падал осмысленно.
+    if (c.maintenance.renegeProbability < 0.0 || c.maintenance.renegeProbability > 1.0) {
+        throw ConfigError("maintenance.renege_probability должен быть в диапазоне [0, 1]");
     }
 }
 
