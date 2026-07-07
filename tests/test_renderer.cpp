@@ -5,6 +5,7 @@
 #include <thread>
 
 #include "atmsim/console/LiveRenderer.hpp"
+#include "atmsim/console/Terminal.hpp"
 #include "simple_test.hpp"
 
 using namespace atmsim;
@@ -106,6 +107,22 @@ TEST(renderer_respects_ui_config) {
         AtmEngine e2(many); LiveRenderer r2(e2, many);
         CHECK(r2.height() > r1.height());
     }
+}
+
+// Кламп смещения прокрутки очереди: [0, max(0, total - viewRows)]. Ключевая
+// «чистая» логика интерактивного просмотра очереди (листание стрелками).
+TEST(terminal_clamp_scroll_offset) {
+    // Список короче окна — прокрутки нет, всегда 0.
+    CHECK_EQ(clampScrollOffset(0, 3, 10), 0);
+    CHECK_EQ(clampScrollOffset(5, 3, 10), 0);
+    // Список длиннее окна — максимум total - viewRows.
+    CHECK_EQ(clampScrollOffset(0, 100, 10), 0);
+    CHECK_EQ(clampScrollOffset(50, 100, 10), 50);
+    CHECK_EQ(clampScrollOffset(90, 100, 10), 90);   // ровно на границе
+    CHECK_EQ(clampScrollOffset(999, 100, 10), 90);  // не уезжаем за конец
+    CHECK_EQ(clampScrollOffset(-5, 100, 10), 0);    // не уезжаем за начало
+    // Пустой список.
+    CHECK_EQ(clampScrollOffset(3, 0, 10), 0);
 }
 
 // Полный жизненный цикл render-потока: старт, перерисовка, пауза/возобновление,

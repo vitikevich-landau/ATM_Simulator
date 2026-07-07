@@ -25,6 +25,35 @@ public:
     static int height();  // высота терминала в строках (fallback 24)
 };
 
+// --- Интерактивный ввод (raw-режим) — §4.8 v2: горячие клавиши / прокрутка ------
+// Распознаваемые клавиши. Char — обычный печатный символ (возвращается отдельно),
+// None — нераспознанная управляющая, Eof — ввод закрыт.
+enum class Key { None, Char, Enter, Escape, Up, Down, PageUp, PageDown, Home, End, Eof };
+
+// RAII-перевод stdin в raw-режим (без построчной буферизации и эха) на время жизни
+// объекта; деструктор восстанавливает исходный режим. На Windows ввод читается
+// через _getch (raw по своей природе), поэтому там конструктор — почти no-op.
+// Если stdin не терминал (пайп/файл), active() == false — интерактив недоступен.
+class RawInputMode {
+public:
+    RawInputMode();
+    ~RawInputMode();
+    RawInputMode(const RawInputMode&) = delete;
+    RawInputMode& operator=(const RawInputMode&) = delete;
+    bool active() const { return active_; }
+
+private:
+    bool active_ = false;
+    void* saved_ = nullptr;  // исходные termios (POSIX); на Windows не используется
+};
+
+// Блокирующе читает одну клавишу. Для Key::Char символ возвращается в ch.
+Key readKey(char& ch);
+
+// Ограничивает смещение прокрутки списка диапазоном [0, max(0, total - viewRows)].
+// Вынесено отдельной чистой функцией ради юнит-тестов пагинации.
+int clampScrollOffset(int offset, int total, int viewRows);
+
 // --- ANSI-последовательности управления терминалом --------------------------
 // Escape-код 0x1B записываем восьмеричным "\033". Функции возвращают короткие
 // строки, которые печатаются в stdout.
