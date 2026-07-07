@@ -171,6 +171,43 @@ TEST(terminal_edit_line) {
     CHECK(editLine(buf, cur, Key::Eof, 0) == LineEdit::Cancel);
 }
 
+// displayColumns: колонка курсора считается по символам, а не байтам (кириллица
+// = 2 байта). Именно это лечит «уезжающий вправо» курсор при наборе кириллицы.
+TEST(terminal_display_columns_utf8) {
+    const std::string s = "aфb";  // a=1 байт, ф=2 байта, b=1 байт => 4 байта, 3 колонки
+    CHECK_EQ(s.size(), static_cast<std::size_t>(4));
+    CHECK_EQ(displayColumns(s, 0), static_cast<std::size_t>(0));
+    CHECK_EQ(displayColumns(s, 1), static_cast<std::size_t>(1));  // после 'a'
+    CHECK_EQ(displayColumns(s, 3), static_cast<std::size_t>(2));  // после 'ф' (2 байта -> 1 колонка)
+    CHECK_EQ(displayColumns(s, 4), static_cast<std::size_t>(3));  // после 'b'
+}
+
+// Редактирование кириллицы: ←/→/Backspace работают по целому символу (2 байта),
+// а не по одному байту (иначе курсор встал бы в середину символа).
+TEST(terminal_edit_line_utf8) {
+    const std::string phi = "ф";  // 2 байта UTF-8
+    CHECK_EQ(phi.size(), static_cast<std::size_t>(2));
+
+    std::string buf;
+    std::size_t cur = 0;
+    editLine(buf, cur, Key::Char, phi[0]);  // 'ф' приходит двумя Char-событиями
+    editLine(buf, cur, Key::Char, phi[1]);
+    editLine(buf, cur, Key::Char, 'x');
+    CHECK_EQ(buf, std::string("фx"));
+    CHECK_EQ(cur, static_cast<std::size_t>(3));  // 2 + 1 байт
+
+    editLine(buf, cur, Key::Left, 0);            // через 'x' (1 байт)
+    CHECK_EQ(cur, static_cast<std::size_t>(2));
+    editLine(buf, cur, Key::Left, 0);            // через 'ф' целиком -> 0, не 1
+    CHECK_EQ(cur, static_cast<std::size_t>(0));
+    editLine(buf, cur, Key::Right, 0);           // снова через 'ф' -> 2
+    CHECK_EQ(cur, static_cast<std::size_t>(2));
+
+    editLine(buf, cur, Key::Backspace, 0);       // удаляет весь 'ф' (2 байта)
+    CHECK_EQ(buf, std::string("x"));
+    CHECK_EQ(cur, static_cast<std::size_t>(0));
+}
+
 // Полный жизненный цикл render-потока: старт, перерисовка, пауза/возобновление,
 // остановка (в т.ч. повторная) и разрушение. Именно этот путь ловил MSVC как
 // «порчу стека вокруг renderer». Здесь проверяем его под ASan/TSan; вывод

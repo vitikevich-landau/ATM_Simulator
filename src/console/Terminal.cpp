@@ -187,26 +187,64 @@ int clampScrollOffset(int offset, int total, int viewRows) {
     return offset;
 }
 
+namespace {
+// --- UTF-8: навигация по кодовым точкам в редактируемой строке ---------------
+inline bool isUtf8Cont(char c) {
+    return (static_cast<unsigned char>(c) & 0xC0) == 0x80;  // байт-продолжение 10xxxxxx
+}
+// Начало предыдущей кодовой точки перед байтовой позицией pos (для ← и Backspace).
+std::size_t prevCodePoint(const std::string& s, std::size_t pos) {
+    if (pos == 0) return 0;
+    --pos;
+    while (pos > 0 && isUtf8Cont(s[pos])) --pos;
+    return pos;
+}
+// Начало следующей кодовой точки после байтовой позиции pos (для → и Delete).
+std::size_t nextCodePoint(const std::string& s, std::size_t pos) {
+    const std::size_t n = s.size();
+    if (pos >= n) return n;
+    ++pos;
+    while (pos < n && isUtf8Cont(s[pos])) ++pos;
+    return pos;
+}
+}  // namespace
+
+std::size_t displayColumns(const std::string& s, std::size_t nbytes) {
+    if (nbytes > s.size()) nbytes = s.size();
+    std::size_t cols = 0;
+    for (std::size_t i = 0; i < nbytes; ++i) {
+        if (!isUtf8Cont(s[i])) ++cols;  // считаем только начала символов
+    }
+    return cols;
+}
+
 LineEdit editLine(std::string& buf, std::size_t& cur, Key key, char ch) {
     if (cur > buf.size()) cur = buf.size();  // страховка от рассинхрона
     switch (key) {
         case Key::Enter:  return LineEdit::Submit;
         case Key::Eof:    return LineEdit::Cancel;
         case Key::Char:
+            // Печатный байт вставляем по позиции курсора. Многобайтный символ
+            // (кириллица) приходит несколькими Char-событиями — байты складываются
+            // подряд, cur остаётся на границе символа после последнего из них.
             buf.insert(buf.begin() + static_cast<std::ptrdiff_t>(cur), ch);
             ++cur;
             break;
         case Key::Backspace:
             if (cur > 0) {
-                buf.erase(buf.begin() + static_cast<std::ptrdiff_t>(cur - 1));
-                --cur;
+                const std::size_t start = prevCodePoint(buf, cur);  // удаляем ВЕСЬ символ
+                buf.erase(start, cur - start);
+                cur = start;
             }
             break;
         case Key::Delete:
-            if (cur < buf.size()) buf.erase(buf.begin() + static_cast<std::ptrdiff_t>(cur));
+            if (cur < buf.size()) {
+                const std::size_t end = nextCodePoint(buf, cur);
+                buf.erase(cur, end - cur);
+            }
             break;
-        case Key::Left:  if (cur > 0) --cur; break;
-        case Key::Right: if (cur < buf.size()) ++cur; break;
+        case Key::Left:  cur = prevCodePoint(buf, cur); break;  // на символ, не на байт
+        case Key::Right: cur = nextCodePoint(buf, cur); break;
         case Key::Home:  cur = 0; break;
         case Key::End:   cur = buf.size(); break;
         case Key::Escape: buf.clear(); cur = 0; break;  // очистить строку

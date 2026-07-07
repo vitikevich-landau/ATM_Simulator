@@ -384,8 +384,11 @@ bool AdminConsole::readCommandLineRaw(LiveRenderer& renderer, int inputRow, std:
         // Рисуем строку ввода САМИ (в raw-режиме терминал не эхоит) и ставим курсор
         // в позицию редактирования. Всё под outputMutex_ — синхронно с кадрами.
         // Ту же позицию сообщаем рендереру, чтобы его кадры возвращали курсор сюда
-        // же, а не в таблицу.
-        const int cursorCol = static_cast<int>(prompt.size() + cur) + 1;
+        // же, а не в таблицу. Колонку курсора считаем по ОТОБРАЖАЕМЫМ символам
+        // (displayColumns), а не по байтам — иначе кириллица (2 байта/символ)
+        // уводила бы курсор вправо. prompt — ASCII, его длина = число колонок.
+        const int cursorCol =
+            static_cast<int>(prompt.size() + displayColumns(buf, cur)) + 1;
         renderer.setCursorTarget(inputRow, cursorCol);
         {
             std::lock_guard<std::mutex> lk(renderer.outputMutex());
