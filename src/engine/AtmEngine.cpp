@@ -326,13 +326,28 @@ void AtmEngine::run() {
 //  КОМАНДЫ. Каждая: под кратким эксклюзивным локом меняет режим (atomic store),
 //  затем notify_all() будит спящие потоки. Вызывающего не блокируют.
 // ---------------------------------------------------------------------------
-void AtmEngine::requestPause() {
+bool AtmEngine::requestPause() {
+    bool applied = false;
     {
         std::unique_lock<std::mutex> lock(mutex_);
-        if (state_.load() != AtmState::Stopped) state_.store(AtmState::Paused);
+        // Пауза действует ТОЛЬКО из рабочих режимов (Idle/Serving). Раньше здесь
+        // было «любой не-Stopped -> Paused», и pause поверх Maintenance незаметно
+        // обрывал ТО: Maintenance -> Paused, а resume уводил в Idle/Serving в обход
+        // и таймера, и команды maintenance stop — единственных легальных выходов из
+        // ТО (§4.5 п.5). Теперь во время ТО pause — no-op, ТО идёт своим чередом.
+        const AtmState s = state_.load();
+        if (s == AtmState::Idle || s == AtmState::Serving) {
+            state_.store(AtmState::Paused);
+            applied = true;
+        }
     }
-    wakeUp_.notify_all();
-    if (logger_) logger_->info("Команда: пауза");
+    // Будить потоки есть смысл только если режим реально сменился.
+    if (applied) wakeUp_.notify_all();
+    if (logger_) {
+        logger_->info(applied ? "Команда: пауза"
+                              : "Команда: пауза проигнорирована (идёт ТО или остановка)");
+    }
+    return applied;
 }
 
 void AtmEngine::requestResume() {

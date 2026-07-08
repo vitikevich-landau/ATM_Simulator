@@ -241,7 +241,10 @@ AdminConsole::Next AdminConsole::runCommandLoop() {
 
         switch (c.type) {
             case CommandType::Empty: break;
-            case CommandType::Pause:  engine_.requestPause();  std::cout << "Обслуживание приостановлено.\n"; break;
+            case CommandType::Pause:
+                if (engine_.requestPause()) std::cout << "Обслуживание приостановлено.\n";
+                else std::cout << "Пауза недоступна: идёт техобслуживание (или банкомат остановлен).\n";
+                break;
             case CommandType::Resume: engine_.requestResume(); std::cout << "Обслуживание возобновлено.\n"; break;
             case CommandType::MaintenanceStart: engine_.requestMaintenance(c.seconds); std::cout << "Начато техобслуживание.\n"; break;
             case CommandType::MaintenanceStop:  engine_.endMaintenance(); std::cout << "Техобслуживание завершено.\n"; break;

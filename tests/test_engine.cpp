@@ -379,6 +379,39 @@ TEST(engine_maintenance_state_transitions) {
     CHECK(engine.isStopped());
 }
 
+// Регресс (P1): pause во время ТО не должен обрывать техобслуживание. Раньше
+// pause переводил Maintenance -> Paused, а resume уводил в Idle/Serving в обход
+// таймера и команды maintenance stop — ТО завершалось досрочно (нарушение §4.5
+// п.5). Теперь pause во время ТО — no-op, и выйти из ТО можно только штатно.
+TEST(engine_pause_during_maintenance_is_ignored) {
+    Config cfg = fastConfig(0, 1.0);  // без клиентов — проверяем только режим
+    AtmEngine engine(cfg);
+    std::thread eng([&] { engine.run(); });
+
+    engine.requestMaintenance(std::optional<int>(3600));  // долго, не авто-завершится
+    std::this_thread::sleep_for(30ms);
+    CHECK(engine.snapshot().state == AtmState::Maintenance);
+
+    // Пауза во время ТО игнорируется: команда возвращает false, режим не меняется.
+    CHECK(!engine.requestPause());
+    std::this_thread::sleep_for(30ms);
+    CHECK(engine.snapshot().state == AtmState::Maintenance);
+
+    // И resume не вытаскивает из ТО — режим по-прежнему Maintenance.
+    engine.requestResume();
+    std::this_thread::sleep_for(30ms);
+    CHECK(engine.snapshot().state == AtmState::Maintenance);
+
+    // Штатный выход из ТО (maintenance stop) по-прежнему работает.
+    engine.endMaintenance();
+    std::this_thread::sleep_for(30ms);
+    CHECK(engine.snapshot().state != AtmState::Maintenance);
+
+    engine.requestStop();
+    eng.join();
+    CHECK(engine.isStopped());
+}
+
 // При старте ТО клиенты из очереди уходят с вероятностью renege_probability.
 // Ставим её в 1.0 — значит все стоящие в очереди должны уйти (§4.5).
 TEST(engine_maintenance_reneges_queued_clients) {
