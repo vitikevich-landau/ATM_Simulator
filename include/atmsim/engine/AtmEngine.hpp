@@ -85,6 +85,9 @@ private:
     // Вспомогательные (вызываются строго из потока прихода / под локом).
     Client makeClient();                              // только поток прихода
     double modelSecondsWaited(const Client& c) const; // сколько модельных сек. ждёт
+    // Перевести банкомат в ТО. Вызывается ПОД mutex_: сразу, если клиентов нет
+    // на обслуживании, либо после доработки текущего клиента.
+    void beginMaintenanceLocked(std::optional<int> durationSeconds);
     // Решение «уйти/остаться» для всех в очереди при старте ТО (§4.5). Вызывается
     // из потока обслуживания, ПОД уже захваченным mutex_ (потому «Locked»).
     void applyMaintenanceRenegingLocked();
@@ -140,6 +143,8 @@ private:
     // решение уйти/остаться к очереди». Оба под mutex_.
     std::chrono::steady_clock::time_point maintenanceDeadline_{};
     bool maintenanceRenegePending_{false};
+    bool maintenanceStartPending_{false};  // ТО запрошено, но текущий клиент дорабатывает
+    std::optional<int> pendingMaintenanceDurationSeconds_;
 
     // Отчётность (всё под mutex_): журнал операций и реестр ВСЕХ клиентов
     // (чтобы отвечать на client <id> даже после того, как клиент ушёл/обслужен).

@@ -300,10 +300,16 @@ void AtmEngine::run() {
             currentClient_.reset();
 
             // Если мы всё ещё в режиме Serving (проснулись по таймауту, штатно) —
-            // выбираем следующий режим по наличию очереди. Если во время
-            // обслуживания пришла пауза/стоп — состояние уже сменено, не трогаем.
+            // выбираем следующий режим. Запрошенное во время обслуживания ТО
+            // стартует ТОЛЬКО здесь: текущего клиента доводим до конца по времени,
+            // а следующего клиента из очереди уже не берём в обслуживание. Если
+            // во время обслуживания пришла пауза/стоп — состояние уже сменено, не трогаем.
             if (state_.load() == AtmState::Serving) {
-                state_.store(queue_.empty() ? AtmState::Idle : AtmState::Serving);
+                if (maintenanceStartPending_) {
+                    beginMaintenanceLocked(pendingMaintenanceDurationSeconds_);
+                } else {
+                    state_.store(queue_.empty() ? AtmState::Idle : AtmState::Serving);
+                }
             }
         }
 
@@ -379,32 +385,52 @@ void AtmEngine::requestMaintenance(std::optional<int> durationSeconds) {
         std::unique_lock<std::mutex> lock(mutex_);
         if (state_.load() == AtmState::Stopped) return;
 
-        // Длительность (в МОДЕЛЬНЫХ секундах): явная из аргумента, иначе из конфига.
-        const int durModel = durationSeconds.value_or(cfg_.maintenance.defaultDurationSeconds);
-        if (durModel > 0) {
-            // Модель бежит в time_scale раз быстрее реального времени.
-            const double realSec = static_cast<double>(durModel) / cfg_.simulation.timeScale;
-            maintenanceDeadline_ = Clock::now() +
-                std::chrono::duration_cast<Clock::duration>(std::chrono::duration<double>(realSec));
+        if (currentClient_) {
+            // ТЗ §4.5: уже начатую операцию не обрываем. Команда вступает в силу
+            // сразу в смысле "после текущего клиента не брать следующего", но сам
+            // режим Maintenance начнётся только когда текущий клиент дообслужится.
+            maintenanceStartPending_ = true;
+            pendingMaintenanceDurationSeconds_ = durationSeconds;
         } else {
-            maintenanceDeadline_ = Clock::time_point::max();  // до явной команды stop
+            beginMaintenanceLocked(durationSeconds);
         }
-        state_.store(AtmState::Maintenance);
-        maintenanceRenegePending_ = true;  // поток обслуживания применит уйти/остаться
     }
     wakeUp_.notify_all();
-    if (logger_) logger_->info("Команда: техобслуживание начато");
+    if (logger_) logger_->info("Команда: техобслуживание запрошено");
 }
 
 void AtmEngine::endMaintenance() {
     {
         std::unique_lock<std::mutex> lock(mutex_);
+        maintenanceStartPending_ = false;
+        pendingMaintenanceDurationSeconds_.reset();
         if (state_.load() == AtmState::Maintenance) {
             state_.store(queue_.empty() ? AtmState::Idle : AtmState::Serving);
         }
     }
     wakeUp_.notify_all();
     if (logger_) logger_->info("Команда: техобслуживание завершено");
+}
+
+void AtmEngine::beginMaintenanceLocked(std::optional<int> durationSeconds) {
+    // Длительность (в МОДЕЛЬНЫХ секундах): явная из аргумента, иначе из конфига.
+    // Дедлайн считаем от ФАКТИЧЕСКОГО начала ТО, а не от момента команды: если
+    // текущий клиент дорабатывал ещё 20 секунд, длительность ТО от этого не
+    // "сгорает" заранее.
+    const int durModel = durationSeconds.value_or(cfg_.maintenance.defaultDurationSeconds);
+    if (durModel > 0) {
+        // Модель бежит в time_scale раз быстрее реального времени.
+        const double realSec = static_cast<double>(durModel) / cfg_.simulation.timeScale;
+        maintenanceDeadline_ = Clock::now() +
+            std::chrono::duration_cast<Clock::duration>(std::chrono::duration<double>(realSec));
+    } else {
+        maintenanceDeadline_ = Clock::time_point::max();  // до явной команды stop
+    }
+
+    state_.store(AtmState::Maintenance);
+    maintenanceRenegePending_ = true;  // поток обслуживания применит уйти/остаться
+    maintenanceStartPending_ = false;
+    pendingMaintenanceDurationSeconds_.reset();
 }
 
 void AtmEngine::applyMaintenanceRenegingLocked() {

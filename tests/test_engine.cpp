@@ -198,6 +198,64 @@ TEST(engine_pause_suspends_and_resumes_current_client) {
     arr.join();
 }
 
+// maintenance start НЕ обрывает текущего клиента и не "докидывает" операцию
+// мгновенно. Команда принимается сразу, но режим ТО начинается только после
+// штатного окончания текущего обслуживания (§4.5).
+TEST(engine_maintenance_waits_for_current_service_to_finish) {
+    Config cfg = fastConfig(2, 1.0);           // реальное время
+    cfg.clients.arrivalRatePerMinute = 1000.0; // второй клиент быстро встанет в очередь
+    cfg.serviceTime.distribution = ServiceDistribution::Uniform;
+    cfg.serviceTime.minSeconds = 1.0;          // обслуживание длится 1 c
+    cfg.serviceTime.maxSeconds = 1.0;
+    cfg.clients.patienceSeconds = SecondsRange{1000000, 1000000};
+    cfg.maintenance.renegeProbability = 0.0;   // очередь остаётся ждать ТО
+
+    AtmEngine engine(cfg);
+    std::thread eng([&] { engine.run(); });
+    std::thread arr([&] { engine.generateArrivals(); });
+
+    const auto deadline = std::chrono::steady_clock::now() + 3s;
+    while (std::chrono::steady_clock::now() < deadline &&
+           !engine.snapshot().currentClientId.has_value()) {
+        std::this_thread::sleep_for(1ms);
+    }
+    CHECK(engine.snapshot().currentClientId.has_value());
+
+    engine.requestMaintenance(std::optional<int>(3600));
+
+    // Через долю секунды клиент всё ещё должен обслуживаться. Старое поведение
+    // мгновенно применяло операцию и сбрасывало currentClient_ прямо на команде ТО.
+    std::this_thread::sleep_for(150ms);
+    {
+        const AtmSnapshot s = engine.snapshot();
+        CHECK(s.currentClientId.has_value());
+        CHECK_EQ(s.totalServed, static_cast<std::uint64_t>(0));
+        CHECK(s.state == AtmState::Serving);
+    }
+
+    // После штатной секунды обслуживания банкомат входит в ТО и не берёт второго
+    // клиента из очереди, пока ТО не завершится.
+    auto d2 = std::chrono::steady_clock::now() + 3s;
+    while (std::chrono::steady_clock::now() < d2) {
+        const AtmSnapshot s = engine.snapshot();
+        if (s.state == AtmState::Maintenance && !s.currentClientId) break;
+        std::this_thread::sleep_for(2ms);
+    }
+    {
+        const AtmSnapshot s = engine.snapshot();
+        CHECK(s.state == AtmState::Maintenance);
+        CHECK(!s.currentClientId.has_value());
+        CHECK_EQ(s.totalServed, static_cast<std::uint64_t>(1));
+    }
+
+    std::this_thread::sleep_for(150ms);
+    CHECK_EQ(engine.snapshot().totalServed, static_cast<std::uint64_t>(1));
+
+    engine.requestStop();
+    eng.join();
+    arr.join();
+}
+
 // В журнале ровно одна запись на каждого обслуженного клиента (§4.4).
 TEST(engine_logs_one_record_per_served) {
     const int count = 30;
