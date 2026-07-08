@@ -29,11 +29,20 @@ int main(int argc, char** argv) {
 
         // Технический лог (§10) — отдельно от бизнес-журнала операций.
         Logger logger(cfg.logging.file, Logger::parseLevel(cfg.logging.level));
+        // Если файл лога не открылся (нет прав, битый путь) — Logger молча
+        // глотает все записи. Раньше это никак не всплывало: пользователь думал,
+        // что лог пишется. Предупреждаем в stderr, но не падаем — лог это
+        // вспомогательный поток для разработчика, симуляции он не мешает.
+        if (!logger.ok()) {
+            std::cerr << "Предупреждение: не удалось открыть файл лога '"
+                      << cfg.logging.file << "' — техническое логирование отключено\n";
+        }
         logger.info("Конфигурация загружена: " + path);
 
         std::cout << kProjectName << " v" << kVersion << '\n';
         std::cout << "Конфиг: " << path << "  |  клиентов: " << cfg.clients.count
-                  << "  |  лог: " << cfg.logging.file << "\n";
+                  << "  |  лог: " << (logger.ok() ? cfg.logging.file : std::string("(отключён)"))
+                  << "\n";
 
         installSignalHandlers();  // SIGINT/SIGTERM -> плавная остановка (§4.6)
 
