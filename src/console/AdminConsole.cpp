@@ -10,6 +10,7 @@
 #include <string>
 #include <vector>
 
+#include "atmsim/console/Signals.hpp"
 #include "atmsim/console/Terminal.hpp"
 #include "atmsim/core/Money.hpp"
 
@@ -227,11 +228,16 @@ AdminConsole::Next AdminConsole::runCommandLoop() {
     std::cout << "\n[командный режим] help — команды, live — дашборд, stop — выход\n";
     std::string line;
     while (true) {
+        // Плавная остановка по сигналу (§4.6): Ctrl+C взводит флаг и на Windows
+        // разблокирует getline ниже (CancelSynchronousIo). Проверяем и здесь — на
+        // случай, если сигнал пришёл вне блокирующего чтения.
+        if (shutdownRequested()) return Next::Quit;
         if (engine_.allClientsProcessed()) {
             std::cout << "\n(все клиенты обслужены — restart для нового прогона, stop для выхода)\n";
         }
         std::cout << "\n> " << std::flush;
         if (!std::getline(std::cin, line)) return Next::Quit;
+        if (shutdownRequested()) return Next::Quit;  // getline прерван сигналом
 
         const Command c = parseCommand(line);
         if (!c.error.empty()) {
@@ -402,6 +408,9 @@ bool AdminConsole::readCommandLineRaw(LiveRenderer& renderer, int inputRow, std:
         }
         char ch = 0;
         const Key k = readKey(ch);
+        // Плавный выход по Ctrl+C (§4.6). В live-режиме ключи читает _getch, его
+        // сигнал не прерывает, поэтому реагируем при следующем нажатии клавиши.
+        if (shutdownRequested()) { out.clear(); return false; }
         const LineEdit r = editLine(buf, cur, k, ch);
         if (r == LineEdit::Submit) { out = buf; return true; }
         if (r == LineEdit::Cancel) { out.clear(); return false; }
