@@ -180,6 +180,30 @@ Key readKey(char& ch) {
 #endif
 }
 
+Key readKeyTimeout(char& ch, int timeoutMs) {
+    ch = 0;
+    if (timeoutMs < 0) timeoutMs = 0;
+#ifdef _WIN32
+    // Опрашиваем именно _kbhit (готовность СИМВОЛЬНОЙ клавиши для _getch), а не
+    // WaitForSingleObject на хендле ввода: тот сигналит и на события мыши/фокуса/
+    // ресайза, которых _getch не читает, — и readKey заблокировался бы на _getch.
+    const int step = 10;  // мс между опросами
+    for (int waited = 0; waited < timeoutMs;) {
+        if (_kbhit()) return readKey(ch);
+        const int nap = (timeoutMs - waited < step) ? (timeoutMs - waited) : step;
+        Sleep(static_cast<DWORD>(nap));
+        waited += nap;
+    }
+    if (_kbhit()) return readKey(ch);  // финальная проверка после ожидания
+    return Key::None;
+#else
+    // Ждём готовности stdin не дольше timeoutMs (тем же select, что и разбор ESC).
+    // Нет данных за это время — Key::None; иначе дочитываем клавишу обычным readKey.
+    if (!stdinPending(timeoutMs)) return Key::None;
+    return readKey(ch);
+#endif
+}
+
 int clampScrollOffset(int offset, int total, int viewRows) {
     const int maxOff = (total > viewRows) ? total - viewRows : 0;
     if (offset < 0) return 0;

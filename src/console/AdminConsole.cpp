@@ -317,10 +317,24 @@ void AdminConsole::showQueueInteractive(LiveRenderer& renderer) {
     }
 
     renderer.pause();  // рендер дашборда молчит — экраном владеет просмотрщик
+    // Один раз гасим экран (на нём остался последний кадр дашборда). Дальше
+    // перерисовываем БЕЗ clearScreen — через home()+clearToLineEnd на каждой
+    // строке, — иначе живая перерисовка (см. readKeyTimeout ниже) мигала бы.
+    {
+        std::lock_guard<std::mutex> lk(renderer.outputMutex());
+        std::cout << ansi::hideCursor() << ansi::clearScreen() << std::flush;
+    }
+    // Период перерисовки — как у дашборда (refresh_hz). По этому таймауту читаем
+    // клавишу: нажали — реагируем; не нажали — просто перечитываем очередь и
+    // перерисовываем. Именно это делает список ЖИВЫМ, а не застывшим до первого
+    // нажатия (раньше readKey блокировал цикл, и очередь «замерзала» — особенно
+    // сразу после restart, когда свежий движок ещё не набрал очередь).
+    const int refreshMs = 1000 / std::max(1, cfg_.ui.refreshHz);
     int offset = 0;    // индекс первого видимого клиента очереди
     bool leave = false;
     while (!leave) {
-        // Живые данные: очередь перечитывается на каждую перерисовку.
+        // Живые данные: очередь перечитывается на каждой перерисовке, а
+        // перерисовка идёт по таймауту readKeyTimeout, а не только по нажатию.
         const std::vector<ClientSnapshot> q = engine_.queueSnapshot();
         const int total = static_cast<int>(q.size());
         const int viewRows = std::max(5, Terminal::height() - 4);  // строк под список
@@ -329,31 +343,37 @@ void AdminConsole::showQueueInteractive(LiveRenderer& renderer) {
         {
             std::lock_guard<std::mutex> lk(renderer.outputMutex());
             std::ostringstream os;
-            os << ansi::hideCursor() << ansi::clearScreen() << ansi::home();  // курсор не мельтешит
+            // home() вместо clearScreen(): каждую строку затираем до конца
+            // (clearToLineEnd) — экран не мигает при перерисовке ~refresh_hz раз/с.
+            // Высота кадра постоянна (ровно viewRows строк списка + шапка/подвал),
+            // поэтому «хвостов» от прошлого кадра под подвалом не остаётся.
+            os << ansi::hideCursor() << ansi::home();  // курсор не мельтешит
             os << ansi::bold() << "Очередь: " << total << " клиент(ов)" << ansi::reset();
             if (total > viewRows) {
                 os << ansi::grey() << "   показаны " << (offset + 1) << "–"
                    << std::min(offset + viewRows, total) << " из " << total << ansi::reset();
             }
-            os << '\n' << '\n';
+            os << ansi::clearToLineEnd() << '\n' << ansi::clearToLineEnd() << '\n';
             for (int i = 0; i < viewRows; ++i) {
                 const int idx = offset + i;
-                if (idx >= total) { os << '\n'; continue; }  // пустой слот — постоянная высота
+                if (idx >= total) { os << ansi::clearToLineEnd() << '\n'; continue; }  // пустой слот
                 const ClientSnapshot& c = q[static_cast<std::size_t>(idx)];
                 os << "  " << (idx + 1) << ". #" << c.id << ' ' << to_string(c.requestedOperation);
                 if (c.requestedOperation != OperationType::CheckBalance) {
                     os << ' ' << formatMoney(c.amount);
                 }
                 os << "  ждёт " << static_cast<long>(c.waitedSeconds)
-                   << " c, терпение " << static_cast<long>(c.remainingPatience) << " c\n";
+                   << " c, терпение " << static_cast<long>(c.remainingPatience) << " c"
+                   << ansi::clearToLineEnd() << '\n';
             }
-            os << '\n' << ansi::grey()
-               << "↑/↓ прокрутка · PgUp/PgDn страница · Home/End · Esc/q выход" << ansi::reset();
+            os << ansi::clearToLineEnd() << '\n' << ansi::grey()
+               << "↑/↓ прокрутка · PgUp/PgDn страница · Home/End · Esc/q выход" << ansi::reset()
+               << ansi::clearToLineEnd();
             std::cout << os.str() << std::flush;
         }
 
         char ch = 0;
-        switch (readKey(ch)) {
+        switch (readKeyTimeout(ch, refreshMs)) {
             case Key::Up:       offset -= 1; break;
             case Key::Down:     offset += 1; break;
             case Key::PageUp:   offset -= viewRows; break;
@@ -364,7 +384,7 @@ void AdminConsole::showQueueInteractive(LiveRenderer& renderer) {
             case Key::Escape:
             case Key::Eof:      leave = true; break;
             case Key::Char:     if (ch == 'q' || ch == 'Q') leave = true; break;
-            default: break;  // None и прочее — игнорируем
+            default: break;  // None (таймаут — просто перерисуем на след. круге) и прочее
         }
     }
 
