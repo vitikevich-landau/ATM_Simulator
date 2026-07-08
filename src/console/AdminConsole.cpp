@@ -345,8 +345,9 @@ void AdminConsole::showQueueInteractive(LiveRenderer& renderer) {
             std::ostringstream os;
             // home() вместо clearScreen(): каждую строку затираем до конца
             // (clearToLineEnd) — экран не мигает при перерисовке ~refresh_hz раз/с.
-            // Высота кадра постоянна (ровно viewRows строк списка + шапка/подвал),
-            // поэтому «хвостов» от прошлого кадра под подвалом не остаётся.
+            // Кадр (шапка + viewRows строк + подвал) заполняет высоту терминала
+            // целиком, поэтому «хвостов» от прошлого кадра не остаётся; при
+            // ресайзе viewRows пересчитается на следующем же кадре.
             os << ansi::hideCursor() << ansi::home();  // курсор не мельтешит
             os << ansi::bold() << "Очередь: " << total << " клиент(ов)" << ansi::reset();
             if (total > viewRows) {
@@ -386,6 +387,12 @@ void AdminConsole::showQueueInteractive(LiveRenderer& renderer) {
             case Key::Char:     if (ch == 'q' || ch == 'Q') leave = true; break;
             default: break;  // None (таймаут — просто перерисуем на след. круге) и прочее
         }
+        // Плавная остановка (§4.6): Ctrl+C взводит флаг в обработчике сигнала.
+        // Раньше цикл висел в блокирующем readKey и проверить флаг не мог (на
+        // POSIX выходил лишь случайно: EINTR превращался в Eof, что select теперь
+        // съедает как таймаут). Тикаем каждые refreshMs — проверяем явно, выходим
+        // не позже чем через один период перерисовки на обеих платформах.
+        if (shutdownRequested()) leave = true;
     }
 
     {
@@ -396,6 +403,10 @@ void AdminConsole::showQueueInteractive(LiveRenderer& renderer) {
 }
 
 bool AdminConsole::readCommandLineRaw(LiveRenderer& renderer, int inputRow, std::string& out) {
+    // Сигнал мог прийти, пока мы были НЕ в чтении (например, в просмотре очереди,
+    // который выходит по флагу). Без этой проверки мы бы снова заблокировались в
+    // readKey/getline и потребовали от пользователя ещё одно нажатие для выхода.
+    if (shutdownRequested()) { out.clear(); return false; }
     RawInputMode raw;
     if (!raw.active()) {
         // stdin не терминал — без raw-редактора, обычный построчный ввод.

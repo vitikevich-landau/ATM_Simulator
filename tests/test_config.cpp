@@ -208,3 +208,18 @@ TEST(config_rejects_zero_mean_for_normal) {
     }
     CHECK(threw);
 }
+
+// refresh_hz > 1000 обнулил бы период перерисовки (1000/hz мс) — циклы отрисовки
+// крутились бы без сна. Верхняя граница 60 отсекает такой конфиг ещё на загрузке.
+TEST(config_rejects_too_large_refresh_hz) {
+    bool threw = false;
+    try {
+        ConfigLoader::loadFromString(R"({"ui": {"refresh_hz": 2000}})");
+    } catch (const ConfigError&) {
+        threw = true;
+    }
+    CHECK(threw);
+    // Граница диапазона включительно: 60 — валидно.
+    const Config c = ConfigLoader::loadFromString(R"({"ui": {"refresh_hz": 60}})");
+    CHECK_EQ(c.ui.refreshHz, 60);
+}

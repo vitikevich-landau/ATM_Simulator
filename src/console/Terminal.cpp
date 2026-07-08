@@ -2,6 +2,7 @@
 
 // Платформенно-зависимая часть. Windows-ветка компилируется только на Windows;
 // на Linux (где идёт сборка/проверка) работает POSIX-ветка.
+#include <chrono>   // дедлайн ожидания клавиши в readKeyTimeout (Windows-ветка)
 #include <cstdio>   // EOF (Windows _getch)
 #include <cstdlib>  // getenv / atoi — резервный источник размеров терминала
 
@@ -85,8 +86,12 @@ int Terminal::height() {
 RawInputMode::RawInputMode() {
 #ifdef _WIN32
     // _getch читает клавишу напрямую, без эха и без Enter, независимо от режима
-    // консоли — отдельно переключать режим не нужно.
-    active_ = true;
+    // консоли — отдельно переключать режим не нужно. Но он читает ФИЗИЧЕСКУЮ
+    // клавиатуру консоли: если stdin перенаправлен (пайп/файл), интерактив
+    // невозможен — active_=false, и вызывающие деградируют до построчного ввода
+    // (как в POSIX-ветке ниже). Иначе поданные через пайп команды игнорировались
+    // бы, а просмотр очереди было бы никак не закрыть.
+    active_ = _isatty(_fileno(stdin)) != 0;
 #else
     if (!::isatty(STDIN_FILENO)) return;  // не терминал (пайп/файл) — интерактив невозможен
     termios* orig = new termios;
@@ -187,15 +192,18 @@ Key readKeyTimeout(char& ch, int timeoutMs) {
     // Опрашиваем именно _kbhit (готовность СИМВОЛЬНОЙ клавиши для _getch), а не
     // WaitForSingleObject на хендле ввода: тот сигналит и на события мыши/фокуса/
     // ресайза, которых _getch не читает, — и readKey заблокировался бы на _getch.
-    const int step = 10;  // мс между опросами
-    for (int waited = 0; waited < timeoutMs;) {
+    // Таймаут меряем wall-clock дедлайном, а не суммой номиналов Sleep: реальный
+    // Sleep(10) на таймере по умолчанию (~15.6 мс) спит дольше номинала, и счёт
+    // «дрёмов» растягивал бы период перерисовки в ~1.5 раза против refresh_hz.
+    using SteadyClock = std::chrono::steady_clock;
+    const auto deadline = SteadyClock::now() + std::chrono::milliseconds(timeoutMs);
+    for (;;) {
         if (_kbhit()) return readKey(ch);
-        const int nap = (timeoutMs - waited < step) ? (timeoutMs - waited) : step;
-        Sleep(static_cast<DWORD>(nap));
-        waited += nap;
+        const auto leftMs = std::chrono::duration_cast<std::chrono::milliseconds>(
+                                deadline - SteadyClock::now()).count();
+        if (leftMs <= 0) return Key::None;
+        Sleep(static_cast<DWORD>(leftMs < 10 ? leftMs : 10));
     }
-    if (_kbhit()) return readKey(ch);  // финальная проверка после ожидания
-    return Key::None;
 #else
     // Ждём готовности stdin не дольше timeoutMs (тем же select, что и разбор ESC).
     // Нет данных за это время — Key::None; иначе дочитываем клавишу обычным readKey.

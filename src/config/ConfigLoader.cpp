@@ -99,8 +99,12 @@ void validate(const Config& c) {
         c.serviceTime.meanSeconds <= 0.0) {
         throw ConfigError("для normal/exponential нужно mean_seconds > 0");
     }
-    if (c.ui.refreshHz < 1) {
-        throw ConfigError("ui.refresh_hz должен быть >= 1");
+    // Верхняя граница: период перерисовки считается как 1000/refresh_hz мс
+    // (LiveRenderer и просмотр очереди) — при refresh_hz > 1000 он обнулился бы,
+    // и циклы отрисовки крутились бы без сна (100% CPU на ядро). 60 Гц хватает
+    // любому терминалу с запасом (в конфиге рекомендовано 2-10).
+    if (c.ui.refreshHz < 1 || c.ui.refreshHz > 60) {
+        throw ConfigError("ui.refresh_hz должен быть в диапазоне 1..60");
     }
     if (c.simulation.timeScale <= 0.0) {
         throw ConfigError("time_scale должен быть больше нуля");
