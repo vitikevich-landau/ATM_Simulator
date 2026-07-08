@@ -5,6 +5,7 @@
 #include <thread>
 
 #include "atmsim/engine/AtmEngine.hpp"
+#include "atmsim/engine/ScopedEngineThreads.hpp"
 #include "simple_test.hpp"
 
 using namespace atmsim;
@@ -466,5 +467,33 @@ TEST(engine_pause_and_resume_change_state) {
 
     engine.requestStop();
     eng.join();
+    CHECK(engine.isStopped());
+}
+
+// ScopedEngineThreads (RAII): stop() останавливает и присоединяет оба потока
+// движка, после чего движок в состоянии Stopped; повторный stop() безопасен.
+TEST(scoped_engine_threads_stop_is_idempotent) {
+    Config cfg = fastConfig(0, 1.0);  // без клиентов — проверяем только жизненный цикл
+    AtmEngine engine(cfg);
+    {
+        ScopedEngineThreads threads(engine);
+        std::this_thread::sleep_for(20ms);  // дать потокам стартовать
+        CHECK(!engine.isStopped());
+        threads.stop();                     // явная остановка + join
+        CHECK(engine.isStopped());
+        threads.stop();                     // идемпотентно — не должно зависнуть/упасть
+    }
+    CHECK(engine.isStopped());
+}
+
+// RAII-путь без явного stop(): деструктор обязан сам остановить и присоединить
+// потоки (иначе тест завис бы на join незавершённого потока обслуживания).
+TEST(scoped_engine_threads_destructor_joins) {
+    Config cfg = fastConfig(0, 1.0);
+    AtmEngine engine(cfg);
+    {
+        ScopedEngineThreads threads(engine);
+        std::this_thread::sleep_for(20ms);
+    }  // ~ScopedEngineThreads(): requestStop() + join()
     CHECK(engine.isStopped());
 }
