@@ -158,3 +158,53 @@ TEST(config_accepts_boundary_renege_probability) {
     const Config hi = ConfigLoader::loadFromString(R"({"maintenance": {"renege_probability": 1.0}})");
     CHECK(hi.maintenance.renegeProbability == 1.0);
 }
+
+// Абсурдно большой count уронил бы vector::reserve (bad_alloc/length_error) в
+// std::terminate вместо ConfigError -> проверяем верхнюю границу.
+TEST(config_rejects_too_large_count) {
+    bool threw = false;
+    try {
+        ConfigLoader::loadFromString(R"({"clients": {"count": 1000000000}})");
+    } catch (const ConfigError&) {
+        threw = true;
+    }
+    CHECK(threw);
+}
+
+// Отрицательный начальный баланс завёл бы счёт «в минусе» -> ConfigError.
+TEST(config_rejects_negative_initial_balance) {
+    bool threw = false;
+    try {
+        ConfigLoader::loadFromString(R"({"clients": {"initial_balance": -100}})");
+    } catch (const ConfigError&) {
+        threw = true;
+    }
+    CHECK(threw);
+}
+
+// mean_seconds == 0 для exponential молча подменялся λ=1 и обнулял ρ -> теперь
+// ConfigError.
+TEST(config_rejects_zero_mean_for_exponential) {
+    bool threw = false;
+    try {
+        ConfigLoader::loadFromString(
+            R"({"service_time": {"distribution": "exponential",
+                "params": {"mean_seconds": 0}}})");
+    } catch (const ConfigError&) {
+        threw = true;
+    }
+    CHECK(threw);
+}
+
+// То же требование mean_seconds > 0 действует и для normal.
+TEST(config_rejects_zero_mean_for_normal) {
+    bool threw = false;
+    try {
+        ConfigLoader::loadFromString(
+            R"({"service_time": {"distribution": "normal",
+                "params": {"mean_seconds": 0, "stddev_seconds": 7}}})");
+    } catch (const ConfigError&) {
+        threw = true;
+    }
+    CHECK(threw);
+}

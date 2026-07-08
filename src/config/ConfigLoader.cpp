@@ -50,8 +50,24 @@ void validate(const Config& c) {
     if (c.clients.arrivalRatePerMinute <= 0.0) {
         throw ConfigError("arrival_rate_per_minute должен быть больше нуля");
     }
+    // count идёт прямо в vector::reserve (по счёту и записи реестра на клиента).
+    // Верхняя граница — защита от абсурдного значения: без неё count ~1e9 роняет
+    // reserve через std::bad_alloc/std::length_error, а это НЕ ConfigError и
+    // main его не ловит -> процесс падает в std::terminate вместо осмысленной
+    // ошибки конфигурации.
+    constexpr int kMaxClients = 100'000'000;
     if (c.clients.count < 0) {
         throw ConfigError("clients.count не может быть отрицательным");
+    }
+    if (c.clients.count > kMaxClients) {
+        throw ConfigError("clients.count слишком велик (максимум " +
+                          std::to_string(kMaxClients) + ")");
+    }
+    // Начальный баланс счёта, как и прочие денежные поля, не может быть
+    // отрицательным: иначе завёлся бы счёт «в минусе», у которого любое снятие
+    // сразу даёт InsufficientFunds — бессмысленный (хоть и не аварийный) конфиг.
+    if (c.clients.initialBalance < 0) {
+        throw ConfigError("clients.initial_balance не может быть отрицательным");
     }
     if (c.atm.initialCash < 0 || c.atm.lowCashThreshold < 0) {
         throw ConfigError("значения кассы не могут быть отрицательными");
@@ -71,6 +87,17 @@ void validate(const Config& c) {
     if (c.serviceTime.distribution == ServiceDistribution::Normal &&
         c.serviceTime.stddevSeconds <= 0.0) {
         throw ConfigError("для normal нужно stddev_seconds > 0");
+    }
+    // Для normal и exponential среднее время обслуживания — параметр распределения
+    // (normal: μ; exponential: 1/λ, откуда λ = 1/mean). При mean_seconds == 0
+    // конфиг раньше проходил, но ExponentialServiceTime молча подменял λ=1 (факт.
+    // обслуживание шло с другим средним, чем задано), а expectedServiceSeconds
+    // возвращал 0 -> mu=0 -> теоретическая загрузка ρ=λ/μ печаталась нулевой при
+    // реально идущем обслуживании. Требуем строго > 0.
+    if ((c.serviceTime.distribution == ServiceDistribution::Normal ||
+         c.serviceTime.distribution == ServiceDistribution::Exponential) &&
+        c.serviceTime.meanSeconds <= 0.0) {
+        throw ConfigError("для normal/exponential нужно mean_seconds > 0");
     }
     if (c.ui.refreshHz < 1) {
         throw ConfigError("ui.refresh_hz должен быть >= 1");
