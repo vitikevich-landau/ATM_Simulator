@@ -145,6 +145,10 @@ std::vector<std::string> LiveRenderer::composeLines() const {
             if (s.maintenanceEtaSeconds < 0.0) os << "до stop";
             else os << "~" << static_cast<long>(s.maintenanceEtaSeconds) << "c";
             os << ")";
+        } else if (s.maintenancePending) {
+            // ТО запрошено, но текущий клиент дорабатывает (§4.5): показываем,
+            // что банкомат уже «уходит на ТО», просто не бросает операцию.
+            os << ' ' << C(ansi::blue()) << "(→ ТО после текущего клиента)" << R();
         }
         const double cashFrac = (cfg_.atm.initialCash > 0)
             ? static_cast<double>(s.cashboxBalance) / static_cast<double>(cfg_.atm.initialCash) : 0.0;

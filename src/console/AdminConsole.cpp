@@ -82,6 +82,8 @@ void AdminConsole::printStatus() const {
         std::cout << "ТО: ";
         if (s.maintenanceEtaSeconds < 0.0) std::cout << "до команды maintenance stop\n";
         else std::cout << "осталось ~" << static_cast<long>(s.maintenanceEtaSeconds) << " c\n";
+    } else if (s.maintenancePending) {
+        std::cout << "ТО: начнётся после завершения обслуживания текущего клиента\n";
     }
 }
 
@@ -252,7 +254,18 @@ AdminConsole::Next AdminConsole::runCommandLoop() {
                 else std::cout << "Пауза недоступна: идёт техобслуживание (или банкомат остановлен).\n";
                 break;
             case CommandType::Resume: engine_.requestResume(); std::cout << "Обслуживание возобновлено.\n"; break;
-            case CommandType::MaintenanceStart: engine_.requestMaintenance(c.seconds); std::cout << "Начато техобслуживание.\n"; break;
+            case CommandType::MaintenanceStart:
+                // Ответ администратору — по фактическому результату: ТО могло
+                // начаться сразу, а могло ждать конца текущего обслуживания (§4.5).
+                switch (engine_.requestMaintenance(c.seconds)) {
+                    case MaintenanceStart::Started:
+                        std::cout << "Начато техобслуживание.\n"; break;
+                    case MaintenanceStart::Deferred:
+                        std::cout << "ТО начнётся после завершения обслуживания текущего клиента.\n"; break;
+                    case MaintenanceStart::Ignored:
+                        std::cout << "Банкомат остановлен — ТО не начато.\n"; break;
+                }
+                break;
             case CommandType::MaintenanceStop:  engine_.endMaintenance(); std::cout << "Техобслуживание завершено.\n"; break;
             case CommandType::Live:
                 if (ttyAnsi_) return Next::Live;

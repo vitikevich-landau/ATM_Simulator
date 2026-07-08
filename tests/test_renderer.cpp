@@ -109,6 +109,40 @@ TEST(renderer_respects_ui_config) {
     }
 }
 
+// ТО, запрошенное во время обслуживания, видно на дашборде: строка состояния
+// сообщает, что банкомат дорабатывает текущего клиента и после уйдёт на ТО (§4.5).
+TEST(renderer_shows_deferred_maintenance) {
+    Config cfg;
+    cfg.clients.count = 1;
+    cfg.clients.arrivalRatePerMinute = 1000.0;              // клиент приходит сразу
+    cfg.clients.patienceSeconds = SecondsRange{1000000, 1000000};
+    cfg.serviceTime.distribution = ServiceDistribution::Uniform;
+    cfg.serviceTime.minSeconds = 60.0;   // долгое обслуживание: успеем снять кадр
+    cfg.serviceTime.maxSeconds = 60.0;
+    cfg.ui.color = false;
+    AtmEngine engine(cfg);
+    LiveRenderer r(engine, cfg);
+
+    std::thread eng([&] { engine.run(); });
+    std::thread arr([&] { engine.generateArrivals(); });
+
+    const auto deadline = std::chrono::steady_clock::now() + 3s;
+    while (std::chrono::steady_clock::now() < deadline &&
+           !engine.snapshot().currentClientId.has_value()) {
+        std::this_thread::sleep_for(1ms);
+    }
+    CHECK(engine.snapshot().currentClientId.has_value());
+    CHECK(engine.requestMaintenance(std::nullopt) == MaintenanceStart::Deferred);
+
+    std::string all;
+    for (const auto& l : r.composeLines()) all += l + '\n';
+    CHECK(all.find("ТО после текущего клиента") != std::string::npos);
+
+    engine.requestStop();
+    eng.join();
+    arr.join();
+}
+
 // Кламп смещения прокрутки очереди: [0, max(0, total - viewRows)]. Ключевая
 // «чистая» логика интерактивного просмотра очереди (листание стрелками).
 TEST(terminal_clamp_scroll_offset) {

@@ -221,7 +221,8 @@ TEST(engine_maintenance_waits_for_current_service_to_finish) {
     }
     CHECK(engine.snapshot().currentClientId.has_value());
 
-    engine.requestMaintenance(std::optional<int>(3600));
+    // Команда при живом клиенте отвечает «отложено» (консоль печатает точный ответ).
+    CHECK(engine.requestMaintenance(std::optional<int>(3600)) == MaintenanceStart::Deferred);
 
     // Через долю секунды клиент всё ещё должен обслуживаться. Старое поведение
     // мгновенно применяло операцию и сбрасывало currentClient_ прямо на команде ТО.
@@ -231,6 +232,8 @@ TEST(engine_maintenance_waits_for_current_service_to_finish) {
         CHECK(s.currentClientId.has_value());
         CHECK_EQ(s.totalServed, static_cast<std::uint64_t>(0));
         CHECK(s.state == AtmState::Serving);
+        // Снимок сообщает «ТО запрошено, дорабатываем клиента» — статус для UI.
+        CHECK(s.maintenancePending);
     }
 
     // После штатной секунды обслуживания банкомат входит в ТО и не берёт второго
@@ -246,6 +249,8 @@ TEST(engine_maintenance_waits_for_current_service_to_finish) {
         CHECK(s.state == AtmState::Maintenance);
         CHECK(!s.currentClientId.has_value());
         CHECK_EQ(s.totalServed, static_cast<std::uint64_t>(1));
+        // ТО реально началось — флаг «отложено» обязан сняться.
+        CHECK(!s.maintenancePending);
     }
 
     std::this_thread::sleep_for(150ms);
@@ -567,9 +572,11 @@ TEST(engine_pause_during_maintenance_is_ignored) {
     AtmEngine engine(cfg);
     std::thread eng([&] { engine.run(); });
 
-    engine.requestMaintenance(std::optional<int>(3600));  // долго, не авто-завершится
+    // Никого не обслуживаем — ТО начинается сразу (Started), без флага «отложено».
+    CHECK(engine.requestMaintenance(std::optional<int>(3600)) == MaintenanceStart::Started);
     std::this_thread::sleep_for(30ms);
     CHECK(engine.snapshot().state == AtmState::Maintenance);
+    CHECK(!engine.snapshot().maintenancePending);
 
     // Пауза во время ТО игнорируется: команда возвращает false, режим не меняется.
     CHECK(!engine.requestPause());

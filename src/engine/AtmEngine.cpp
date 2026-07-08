@@ -450,10 +450,12 @@ void AtmEngine::requestStop() {
     if (logger_) logger_->info("Команда: остановка");
 }
 
-void AtmEngine::requestMaintenance(std::optional<int> durationSeconds) {
+MaintenanceStart AtmEngine::requestMaintenance(std::optional<int> durationSeconds) {
+    MaintenanceStart result = MaintenanceStart::Started;
+    ClientId servingId = 0;  // для лога: кого дорабатываем (валиден при Deferred)
     {
         std::unique_lock<std::mutex> lock(mutex_);
-        if (state_.load() == AtmState::Stopped) return;
+        if (state_.load() == AtmState::Stopped) return MaintenanceStart::Ignored;
 
         if (currentClient_) {
             // ТЗ §4.5: уже начатую операцию не обрываем. Команда вступает в силу
@@ -461,12 +463,20 @@ void AtmEngine::requestMaintenance(std::optional<int> durationSeconds) {
             // режим Maintenance начнётся только когда текущий клиент дообслужится.
             maintenanceStartPending_ = true;
             pendingMaintenanceDurationSeconds_ = durationSeconds;
+            servingId = currentClient_->id;
+            result = MaintenanceStart::Deferred;
         } else {
             beginMaintenanceLocked(durationSeconds);
         }
     }
     wakeUp_.notify_all();
-    if (logger_) logger_->info("Команда: техобслуживание запрошено");
+    if (logger_) {
+        logger_->info(result == MaintenanceStart::Deferred
+                          ? "Команда: ТО начнётся после завершения обслуживания клиента #" +
+                                std::to_string(servingId)
+                          : "Команда: техобслуживание начато");
+    }
+    return result;
 }
 
 void AtmEngine::endMaintenance() {
@@ -556,6 +566,7 @@ AtmSnapshot AtmEngine::snapshot() const {
         std::chrono::duration<double>(Clock::now() - startTime_).count() * cfg_.simulation.timeScale;
     s.lowCash = cashbox_.balance() < cfg_.atm.lowCashThreshold;
     s.lastCashMove = lastCashMove_;
+    s.maintenancePending = maintenanceStartPending_;
 
     // Остаток режима ТО (для status/atm/дашборда).
     if (state_.load() == AtmState::Maintenance) {

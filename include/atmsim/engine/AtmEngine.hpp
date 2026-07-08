@@ -34,6 +34,12 @@
 
 namespace atmsim {
 
+/// Результат команды «maintenance start» (§4.5): Started — ТО началось сразу
+/// (никого не обслуживали); Deferred — банкомат дорабатывает текущего клиента,
+/// ТО начнётся после него; Ignored — банкомат уже остановлен, команда не имеет
+/// смысла. Консоль по этому значению печатает точный ответ администратору.
+enum class MaintenanceStart { Started, Deferred, Ignored };
+
 /// \brief Многопоточное ядро банкомата: поток обслуживания + поток прихода,
 ///        потокобезопасные снимки для отчётов, прерываемое ожидание (§6.2).
 /// \note Всё изменяемое состояние мутирует только поток обслуживания (§6.1);
@@ -59,8 +65,10 @@ public:
     void requestStop();
     // Техобслуживание (§4.5). durationSeconds — длительность в МОДЕЛЬНЫХ секундах;
     // если не задано — берётся default_duration_seconds из конфига; значение <= 0
-    // означает «до явной команды maintenance stop».
-    void requestMaintenance(std::optional<int> durationSeconds);
+    // означает «до явной команды maintenance stop». Если сейчас идёт обслуживание,
+    // ТО откладывается до его конца (возврат Deferred, снимок покажет
+    // maintenancePending) — начатую операцию не обрываем.
+    MaintenanceStart requestMaintenance(std::optional<int> durationSeconds);
     void endMaintenance();
 
     // --- Снимки и отчёты (потокобезопасное чтение под shared_lock) -----------
