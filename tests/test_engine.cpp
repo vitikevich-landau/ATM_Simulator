@@ -261,6 +261,55 @@ TEST(engine_maintenance_waits_for_current_service_to_finish) {
     arr.join();
 }
 
+// Повторный «maintenance start» во время идущего ТО (продление) обязан заново
+// применить решение «уйти/остаться» (§4.5 п.3) к накопившейся очереди. Регресс:
+// флаг взводился, но поток обслуживания сидел во внутреннем цикле ТО и до
+// проверки на входе в ветку не доходил — решение молча пропускалось.
+TEST(engine_maintenance_restart_reapplies_reneging) {
+    const int count = 10;
+    Config cfg = fastConfig(count, 1000.0);
+    cfg.clients.arrivalRatePerMinute = 6000.0;                     // прибывают мгновенно
+    cfg.clients.patienceSeconds = SecondsRange{1000000, 1000000};  // терпение не мешает
+    cfg.maintenance.renegeProbability = 1.0;                       // при старте ТО уходят ВСЕ
+    cfg.maintenance.arrivalsContinue = true;
+
+    AtmEngine engine(cfg);
+    std::thread eng([&] { engine.run(); });
+
+    // ТО стартует при ПУСТОЙ очереди — первое решение «уйти/остаться» никого не застаёт.
+    CHECK(engine.requestMaintenance(std::optional<int>(1000000)) == MaintenanceStart::Started);
+    {
+        const auto d = std::chrono::steady_clock::now() + 3s;
+        while (std::chrono::steady_clock::now() < d &&
+               engine.snapshot().state != AtmState::Maintenance) {
+            std::this_thread::sleep_for(1ms);
+        }
+    }
+    CHECK(engine.snapshot().state == AtmState::Maintenance);
+
+    // Все клиенты приходят уже ВО ВРЕМЯ ТО и копятся в очереди (терпение огромное,
+    // обслуживания нет — никто не убывает).
+    std::thread arr([&] { engine.generateArrivals(); });
+    arr.join();
+    CHECK_EQ(engine.snapshot().queueLength, static_cast<std::size_t>(count));
+
+    // Продление ТО: с renege_probability=1.0 вся очередь обязана уйти сразу.
+    CHECK(engine.requestMaintenance(std::optional<int>(1000000)) == MaintenanceStart::Started);
+    {
+        const auto d = std::chrono::steady_clock::now() + 3s;
+        while (std::chrono::steady_clock::now() < d && engine.snapshot().queueLength != 0) {
+            std::this_thread::sleep_for(1ms);
+        }
+    }
+    const AtmSnapshot s = engine.snapshot();
+    CHECK_EQ(s.queueLength, static_cast<std::size_t>(0));
+    CHECK(s.state == AtmState::Maintenance);  // ТО продолжается, банкомат не «ожил»
+    CHECK_EQ(engine.statsSnapshot().renegedByMaintenance, static_cast<std::uint64_t>(count));
+
+    engine.requestStop();
+    eng.join();
+}
+
 // Клиент должен уходить ровно из очереди, даже если банкомат занят длинной
 // операцией другого клиента. Раньше reneging проверялся только при pop_front().
 TEST(engine_reneges_queued_clients_while_service_busy) {
