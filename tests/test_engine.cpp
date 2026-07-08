@@ -256,6 +256,126 @@ TEST(engine_maintenance_waits_for_current_service_to_finish) {
     arr.join();
 }
 
+// Клиент должен уходить ровно из очереди, даже если банкомат занят длинной
+// операцией другого клиента. Раньше reneging проверялся только при pop_front().
+TEST(engine_reneges_queued_clients_while_service_busy) {
+    Config cfg = fastConfig(2, 100.0);
+    cfg.clients.arrivalMode = ArrivalMode::Batch;
+    cfg.clients.arrivalRatePerMinute = 6000.0;       // второй приходит почти сразу
+    cfg.clients.patienceSeconds = SecondsRange{100, 100}; // 1 c реального времени
+    cfg.serviceTime.distribution = ServiceDistribution::Uniform;
+    cfg.serviceTime.minSeconds = 300.0;              // 3 c реального обслуживания
+    cfg.serviceTime.maxSeconds = 300.0;
+
+    AtmEngine engine(cfg);
+    std::thread eng([&] { engine.run(); });
+    std::thread arr([&] { engine.generateArrivals(); });
+
+    auto deadline = std::chrono::steady_clock::now() + 3s;
+    while (std::chrono::steady_clock::now() < deadline &&
+           !engine.snapshot().currentClientId.has_value()) {
+        std::this_thread::sleep_for(1ms);
+    }
+    CHECK(engine.snapshot().currentClientId.has_value());
+
+    deadline = std::chrono::steady_clock::now() + 3s;
+    while (std::chrono::steady_clock::now() < deadline &&
+           engine.snapshot().queueLength == 0) {
+        std::this_thread::sleep_for(1ms);
+    }
+    CHECK(engine.snapshot().queueLength > 0);
+
+    deadline = std::chrono::steady_clock::now() + 3s;
+    while (std::chrono::steady_clock::now() < deadline &&
+           engine.snapshot().totalLeft == 0) {
+        std::this_thread::sleep_for(2ms);
+    }
+    {
+        const AtmSnapshot s = engine.snapshot();
+        CHECK_EQ(s.totalLeft, static_cast<std::uint64_t>(1));
+        CHECK_EQ(s.queueLength, static_cast<std::size_t>(0));
+        CHECK(s.currentClientId.has_value());                    // первый ещё обслуживается
+        CHECK_EQ(s.totalServed, static_cast<std::uint64_t>(0));
+    }
+
+    engine.requestStop();
+    eng.join();
+    arr.join();
+}
+
+// На паузе очередь продолжает жить: новые клиенты встают, но терпение всё равно
+// тикает, и они уходят без ожидания resume.
+TEST(engine_reneges_queued_clients_while_paused) {
+    Config cfg = fastConfig(1, 100.0);
+    cfg.clients.patienceSeconds = SecondsRange{50, 50};  // 0.5 c реального времени
+
+    AtmEngine engine(cfg);
+    std::thread eng([&] { engine.run(); });
+    CHECK(engine.requestPause());
+    std::thread arr([&] { engine.generateArrivals(); });
+
+    auto deadline = std::chrono::steady_clock::now() + 3s;
+    while (std::chrono::steady_clock::now() < deadline &&
+           engine.snapshot().queueLength == 0) {
+        std::this_thread::sleep_for(1ms);
+    }
+    CHECK_EQ(engine.snapshot().queueLength, static_cast<std::size_t>(1));
+
+    deadline = std::chrono::steady_clock::now() + 3s;
+    while (std::chrono::steady_clock::now() < deadline &&
+           engine.snapshot().totalLeft == 0) {
+        std::this_thread::sleep_for(2ms);
+    }
+    {
+        const AtmSnapshot s = engine.snapshot();
+        CHECK(s.state == AtmState::Paused);
+        CHECK_EQ(s.totalLeft, static_cast<std::uint64_t>(1));
+        CHECK_EQ(s.queueLength, static_cast<std::size_t>(0));
+    }
+
+    engine.requestStop();
+    eng.join();
+    arr.join();
+}
+
+// Во время ТО оставшиеся ждать клиенты не висят до maintenance stop: если терпение
+// истекло раньше, они уходят из очереди по обычному reneging.
+TEST(engine_reneges_queued_clients_during_maintenance) {
+    Config cfg = fastConfig(1, 100.0);
+    cfg.clients.patienceSeconds = SecondsRange{50, 50}; // 0.5 c реального времени
+    cfg.maintenance.renegeProbability = 0.0;            // при старте ТО клиент остаётся ждать
+    cfg.maintenance.defaultDurationSeconds = 100000;    // ТО долгое
+    cfg.maintenance.arrivalsContinue = true;
+
+    AtmEngine engine(cfg);
+    std::thread eng([&] { engine.run(); });
+    engine.requestMaintenance(std::nullopt);
+    std::thread arr([&] { engine.generateArrivals(); });
+
+    auto deadline = std::chrono::steady_clock::now() + 3s;
+    while (std::chrono::steady_clock::now() < deadline &&
+           engine.snapshot().queueLength == 0) {
+        std::this_thread::sleep_for(1ms);
+    }
+    CHECK_EQ(engine.snapshot().queueLength, static_cast<std::size_t>(1));
+
+    deadline = std::chrono::steady_clock::now() + 3s;
+    while (std::chrono::steady_clock::now() < deadline &&
+           engine.snapshot().totalLeft == 0) {
+        std::this_thread::sleep_for(2ms);
+    }
+    {
+        const AtmSnapshot s = engine.snapshot();
+        CHECK(s.state == AtmState::Maintenance);
+        CHECK_EQ(s.totalLeft, static_cast<std::uint64_t>(1));
+        CHECK_EQ(s.queueLength, static_cast<std::size_t>(0));
+    }
+
+    engine.requestStop();
+    eng.join();
+    arr.join();
+}
+
 // В журнале ровно одна запись на каждого обслуженного клиента (§4.4).
 TEST(engine_logs_one_record_per_served) {
     const int count = 30;

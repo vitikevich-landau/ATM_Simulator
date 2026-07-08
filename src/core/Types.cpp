@@ -38,6 +38,7 @@ std::string to_string(OperationStatus s) {
         case OperationStatus::InsufficientFunds: return "InsufficientFunds";
         case OperationStatus::InsufficientCash:  return "InsufficientCash";
         case OperationStatus::InvalidAmount:     return "InvalidAmount";
+        case OperationStatus::Overflow:          return "Overflow";
     }
     return "Unknown";
 }

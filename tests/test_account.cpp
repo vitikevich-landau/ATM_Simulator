@@ -1,3 +1,5 @@
+#include <limits>
+
 #include "atmsim/core/Account.hpp"
 #include "simple_test.hpp"
 
@@ -34,4 +36,13 @@ TEST(account_rejects_nonpositive_amount) {
     CHECK(a.deposit(0).status == OperationStatus::InvalidAmount);
     CHECK(a.deposit(-100).status == OperationStatus::InvalidAmount);
     CHECK_EQ(a.balance(), Money(10000));  // ни одна из попыток не изменила баланс
+}
+
+TEST(account_deposit_rejects_overflow) {
+    Account a(1, std::numeric_limits<Money>::max() - 5);
+    const auto r = a.deposit(10);
+    CHECK(r.status == OperationStatus::Overflow);
+    CHECK(!r.ok());
+    CHECK_EQ(a.balance(), std::numeric_limits<Money>::max() - 5);
+    CHECK_EQ(r.balanceAfter, std::numeric_limits<Money>::max() - 5);
 }

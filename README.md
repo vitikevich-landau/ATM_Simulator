@@ -62,11 +62,10 @@ docker run --rm -it -v "$PWD":/work -w /work php:8.3-cli ./build/atm_sim
 
 На машине разработки сейчас нет локального C++-тулчейна, поэтому сборка и
 проверка идут в Linux-контейнере с GCC 14 (`php:8.3-cli` — в нём уже есть
-`g++`/`make`). Пример прямой компиляции (без CMake) для быстрой проверки:
+`g++`/`make`). Быстрая проверка без CMake:
 
 ```bash
-docker run --rm -v "$PWD":/work -w /work php:8.3-cli \
-  g++ -std=c++20 -O2 -Wall -Wextra -pthread -Iinclude src/main.cpp -o build/atm_sim
+docker run --rm -v "$PWD":/work -w /work php:8.3-cli sh scripts/build_docker.sh
 ```
 
 Тот же контейнер используется для прогона с **ThreadSanitizer** (поиск гонок
@@ -90,7 +89,7 @@ docker run --rm --security-opt seccomp=unconfined -v "$PWD":/work -w /work \
 Все прогоны — в контейнере с GCC 14 (см. `scripts/`):
 
 ```bash
-# сборка + 51 юнит/сценарный тест
+# сборка + 86 юнит/сценарных тестов
 docker run --rm -v "$PWD":/work -w /work php:8.3-cli sh scripts/build_docker.sh
 
 # ThreadSanitizer — гонки данных в многопоточном ядре (§11, §14)
@@ -103,8 +102,10 @@ docker run --rm --security-opt seccomp=unconfined -v "$PWD":/work -w /work \
 ```
 
 Ключевые гарантии (проверены тестами): инвариант сохранения денег держится под
-нагрузкой; `pause`/`stop` применяются мгновенно (§6.2); read-path дашборда не
-создаёт гонок; при перенаправлении вывода нет ANSI-кодов.
+нагрузкой; переполнение `Money` даёт штатный отказ без изменения счёта/кассы;
+уход по терпению происходит прямо во время ожидания в очереди; `pause`/`stop`
+применяются мгновенно (§6.2); read-path дашборда не создаёт гонок; при
+перенаправлении вывода нет ANSI-кодов.
 
 Два независимых потока информации: **бизнес-журнал операций** (команда
 `operations`/`export`) и **технический лог** уровней DEBUG/INFO/WARN/ERROR в

@@ -1,4 +1,5 @@
 #include <cstdint>
+#include <limits>
 #include <vector>
 
 #include "atmsim/core/Client.hpp"
@@ -58,6 +59,25 @@ TEST(operation_withdraw_double_check_funds_and_cash) {
     CHECK(r3.ok());
     CHECK_EQ(ok.balance(), Money(70000));
     CHECK_EQ(full.balance(), Money(70000));
+}
+
+TEST(operation_deposit_overflow_leaves_account_and_cashbox_unchanged) {
+    {
+        Account a(1, std::numeric_limits<Money>::max() - 5);
+        Cashbox box(1000);
+        const auto r = applyOperation(OperationType::Deposit, 10, a, box);
+        CHECK(r.status == OperationStatus::Overflow);
+        CHECK_EQ(a.balance(), std::numeric_limits<Money>::max() - 5);
+        CHECK_EQ(box.balance(), Money(1000));
+    }
+    {
+        Account a(1, 1000);
+        Cashbox box(std::numeric_limits<Money>::max() - 5);
+        const auto r = applyOperation(OperationType::Deposit, 10, a, box);
+        CHECK(r.status == OperationStatus::Overflow);
+        CHECK_EQ(a.balance(), Money(1000));
+        CHECK_EQ(box.balance(), std::numeric_limits<Money>::max() - 5);
+    }
 }
 
 // ГЛАВНЫЙ тест ядра: инвариант сохранения денег (§4.2, §11).

@@ -34,7 +34,8 @@ enum class AtmState { Idle, Serving, Paused, Maintenance, Stopped };
 
 // Исход операции. Это НЕ ошибки-исключения, а штатные бизнес-результаты (§6.5):
 // «не хватило денег» — обычный, ожидаемый ответ, а не аварийная ситуация.
-enum class OperationStatus { Success, InsufficientFunds, InsufficientCash, InvalidAmount };
+// Overflow — тоже штатный отказ: операция не помещается в Money без переполнения.
+enum class OperationStatus { Success, InsufficientFunds, InsufficientCash, InvalidAmount, Overflow };
 
 // Результат применения операции (§6.3): статус + баланс счёта после операции.
 struct OperationOutcome {

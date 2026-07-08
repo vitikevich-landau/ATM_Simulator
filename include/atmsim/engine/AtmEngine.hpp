@@ -85,6 +85,10 @@ private:
     // Вспомогательные (вызываются строго из потока прихода / под локом).
     Client makeClient();                              // только поток прихода
     double modelSecondsWaited(const Client& c) const; // сколько модельных сек. ждёт
+    // Уход по терпению (§4.1): удалить из очереди всех, кто уже перетерпел, и
+    // найти ближайший дедлайн следующего ухода. Оба метода вызываются ПОД mutex_.
+    bool pruneExpiredQueueLocked();
+    std::optional<std::chrono::steady_clock::time_point> nextQueuePatienceDeadlineLocked() const;
     // Перевести банкомат в ТО. Вызывается ПОД mutex_: сразу, если клиентов нет
     // на обслуживании, либо после доработки текущего клиента.
     void beginMaintenanceLocked(std::optional<int> durationSeconds);

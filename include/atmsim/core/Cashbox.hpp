@@ -20,6 +20,7 @@ public:
 
     // Хватает ли наличности, чтобы выдать amount. Заодно отсекает amount <= 0.
     bool canDispense(Money amount) const { return amount > 0 && amount <= balance_; }
+    bool canAccept(Money amount) const;
 
     // Выдать наличные (уменьшить кассу).
     // ПРЕДУСЛОВИЕ: вызывающий уже проверил canDispense(amount). Метод не
@@ -28,7 +29,8 @@ public:
     void dispense(Money amount);
 
     // Принять наличные (увеличить кассу) — при внесении клиентом.
-    void accept(Money amount);
+    // Возвращает false, если сумма невалидна или привела бы к overflow.
+    bool accept(Money amount);
 
 private:
     Money balance_;

@@ -23,6 +23,7 @@ public:
 
     AccountId id() const { return id_; }
     Money balance() const { return balance_; }
+    bool canDeposit(Money amount) const;
 
     // Списание со счёта. Возможные исходы:
     //   Success            — списано, баланс уменьшен;
@@ -30,7 +31,8 @@ public:
     //   InvalidAmount      — сумма <= 0 (баланс не изменён).
     OperationOutcome withdraw(Money amount);
 
-    // Пополнение счёта. Исходы: Success либо InvalidAmount (сумма <= 0).
+    // Пополнение счёта. Исходы: Success, InvalidAmount (сумма <= 0) либо
+    // Overflow (результат не помещается в Money).
     OperationOutcome deposit(Money amount);
 
 private:

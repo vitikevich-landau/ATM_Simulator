@@ -24,6 +24,9 @@ OperationOutcome applyOperation(OperationType type, Money amount,
             if (amount <= 0) {
                 return {OperationStatus::InvalidAmount, account.balance()};
             }
+            if (!account.canDeposit(amount) || !cashbox.canAccept(amount)) {
+                return {OperationStatus::Overflow, account.balance()};
+            }
             // Деньги входят В систему: счёт и касса растут на одну сумму.
             account.deposit(amount);
             cashbox.accept(amount);

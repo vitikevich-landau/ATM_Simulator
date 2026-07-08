@@ -35,6 +35,39 @@ double AtmEngine::modelSecondsWaited(const Client& c) const {
     return realSec * cfg_.simulation.timeScale;
 }
 
+bool AtmEngine::pruneExpiredQueueLocked() {
+    bool removed = false;
+    std::deque<Client> kept;
+    while (!queue_.empty()) {
+        Client c = queue_.front();
+        queue_.pop_front();
+        if (modelSecondsWaited(c) > static_cast<double>(c.patience.count())) {
+            roster_[c.id - 1].state = ClientState::LeftQueue;
+            ++totalLeft_;
+            removed = true;
+        } else {
+            kept.push_back(c);
+        }
+    }
+    queue_ = std::move(kept);
+    if (removed && queue_.empty() && !currentClient_ && state_.load() == AtmState::Serving) {
+        state_.store(AtmState::Idle);
+    }
+    return removed;
+}
+
+std::optional<Clock::time_point> AtmEngine::nextQueuePatienceDeadlineLocked() const {
+    std::optional<Clock::time_point> next;
+    for (const auto& c : queue_) {
+        const std::chrono::duration<double> realPatience(
+            static_cast<double>(c.patience.count()) / cfg_.simulation.timeScale);
+        const auto deadline =
+            c.arrivalTime + std::chrono::duration_cast<Clock::duration>(realPatience);
+        if (!next || deadline < *next) next = deadline;
+    }
+    return next;
+}
+
 Client AtmEngine::makeClient() {
     // Эти распределения дешёвые, строим их по месту. Все берут ТОЛЬКО arrivalRng_,
     // к которому не прикасается ни один другой поток.
@@ -144,45 +177,60 @@ void AtmEngine::run() {
             if (state_.load() == AtmState::Maintenance) {
                 // Один раз при входе в ТО — каждый в очереди «решает» уйти/остаться.
                 if (maintenanceRenegePending_) {
+                    pruneExpiredQueueLocked();
                     applyMaintenanceRenegingLocked();
                     maintenanceRenegePending_ = false;
                 }
-                // Ждём: наступит дедлайн ТО, ЛИБО сменится режим (maintenance stop /
-                // stop), смотря что раньше. Для «бессрочного» ТО (deadline == max)
-                // ждём без таймаута: wait_until с time_point::max() на некоторых
-                // реализациях переполняется.
-                const auto maintenanceOver = [this] {
-                    return state_.load() != AtmState::Maintenance;  // Stopped тоже подходит
-                };
-                if (maintenanceDeadline_ == Clock::time_point::max()) {
-                    wakeUp_.wait(lock, maintenanceOver);
-                } else {
-                    wakeUp_.wait_until(lock, maintenanceDeadline_, maintenanceOver);
+                while (state_.load() == AtmState::Maintenance) {
+                    pruneExpiredQueueLocked();
+
+                    const bool timedMaintenance =
+                        maintenanceDeadline_ != Clock::time_point::max();
+                    if (timedMaintenance && Clock::now() >= maintenanceDeadline_) {
+                        state_.store(queue_.empty() ? AtmState::Idle : AtmState::Serving);
+                        // Обязательно будим: поток прихода может спать в ожидании конца
+                        // ТО (arrivals_continue=false), и без notify его предикат
+                        // «state != Maintenance» никто больше не перепроверит — приход
+                        // клиентов замер бы навсегда.
+                        wakeUp_.notify_all();
+                        break;
+                    }
+
+                    std::optional<Clock::time_point> wakeDeadline;
+                    if (timedMaintenance) wakeDeadline = maintenanceDeadline_;
+                    if (const auto patienceDeadline = nextQueuePatienceDeadlineLocked();
+                        patienceDeadline && (!wakeDeadline || *patienceDeadline < *wakeDeadline)) {
+                        wakeDeadline = patienceDeadline;
+                    }
+
+                    // Ждём либо конца ТО, либо ближайшего истечения терпения в очереди.
+                    // Используем raw wait/wait_until, чтобы любое notify (новый клиент,
+                    // maintenance stop, stop) давало шанс пересчитать более ранний дедлайн.
+                    if (wakeDeadline) {
+                        wakeUp_.wait_until(lock, *wakeDeadline);
+                    } else {
+                        wakeUp_.wait(lock);
+                    }
+                    if (state_.load() == AtmState::Stopped) break;
                 }
-                // Остановка во время ТО: выходим из цикла (иначе продолжали бы ждать ТО).
                 if (state_.load() == AtmState::Stopped) break;
-                // Если всё ещё ТО и время вышло — авто-завершение.
-                if (state_.load() == AtmState::Maintenance && Clock::now() >= maintenanceDeadline_) {
-                    state_.store(queue_.empty() ? AtmState::Idle : AtmState::Serving);
-                    // Обязательно будим: поток прихода может спать в ожидании конца
-                    // ТО (arrivals_continue=false), и без notify его предикат
-                    // «state != Maintenance» никто больше не перепроверит — приход
-                    // клиентов замер бы навсегда.
-                    wakeUp_.notify_all();
-                }
                 continue;  // на новый круг: там уже обычный режим
             }
 
-            // «Спим с условием»: просыпаемся, когда есть кого обслуживать в рабочем
-            // режиме, ЛИБО пришла остановка, ЛИБО сменился режим (пауза/ТО). На
-            // паузе предикат ложен — значит продолжаем спать, не крутя цикл впустую.
-            wakeUp_.wait(lock, [this] {
+            // Ждём работы, но не забываем про reneging: даже на паузе клиенты из
+            // очереди уходят, когда истекло терпение (§4.1).
+            for (;;) {
+                pruneExpiredQueueLocked();
                 const AtmState s = state_.load();
-                if (s == AtmState::Stopped) return true;
-                if (s == AtmState::Maintenance) return true;  // выйти -> обработать ТО сверху
-                if (s == AtmState::Paused) return false;      // на паузе клиентов не берём
-                return !queue_.empty();
-            });
+                if (s == AtmState::Stopped || s == AtmState::Maintenance) break;
+                if (s != AtmState::Paused && !queue_.empty()) break;
+
+                if (const auto deadline = nextQueuePatienceDeadlineLocked()) {
+                    wakeUp_.wait_until(lock, *deadline);
+                } else {
+                    wakeUp_.wait(lock);
+                }
+            }
 
             if (state_.load() == AtmState::Stopped) break;
             if (state_.load() == AtmState::Maintenance) continue;  // на след. круге — ветка ТО
@@ -227,29 +275,51 @@ void AtmEngine::run() {
             //   * pause — ПРИОСТАНОВКА: клиент остаётся «в обслуживании»
             //     (currentClient_ не сбрасываем), таймер службы замирает и
             //     продолжается с resume — остаток дообслуживаем;
-            //   * stop / ТО — «доработать текущую»: выходим из цикла и ниже
-            //     доводим операцию до конца.
+            //   * stop — выходим из цикла и ниже доводим операцию до конца;
+            //   * maintenance start во время обслуживания не меняет state_ сразу:
+            //     ТО стартует после штатного окончания текущего клиента.
             // Пока идут ожидания, лок ОТПУЩЕН — читатели-снимки не блокируются,
             // а pause/resume/stop применяются мгновенно (§5, §14).
             std::chrono::duration<double> remaining(realDuration);
             std::chrono::duration<double> servedReal(0.0);
             for (;;) {
+                remaining = realDuration - servedReal;
+                if (remaining <= std::chrono::duration<double>::zero()) break;
+
+                std::chrono::duration<double> slice = remaining;
+                if (const auto patienceDeadline = nextQueuePatienceDeadlineLocked()) {
+                    auto untilPatience =
+                        std::chrono::duration<double>(*patienceDeadline - Clock::now());
+                    if (untilPatience < std::chrono::duration<double>::zero()) {
+                        untilPatience = std::chrono::duration<double>::zero();
+                    }
+                    if (untilPatience < slice) slice = untilPatience;
+                }
+
                 const auto sliceStart = Clock::now();
-                wakeUp_.wait_for(lock, remaining, [this] {
-                    return state_.load() != AtmState::Serving;  // Paused/Stopped/ТО будят
-                });
+                wakeUp_.wait_for(lock, slice);
                 servedReal += std::chrono::duration<double>(Clock::now() - sliceStart);
+                pruneExpiredQueueLocked();
+
+                if (state_.load() == AtmState::Serving) {
+                    // Проснулись по дедлайну терпения (или по таймауту обслуживания).
+                    // Если обслуживание ещё не добежало, продолжаем ждать остаток.
+                    continue;
+                }
                 if (state_.load() != AtmState::Paused) {
-                    // Serving — истёк таймер (обслужен штатно); Stopped/ТО — доводим.
+                    // Stopped — доводим текущую операцию по политике плавной остановки.
                     break;
                 }
                 // Пауза: замираем до resume/stop, НЕ тратя время службы. Остаток
                 // (realDuration − уже отработанное) дообслужим после возобновления.
-                remaining = realDuration - servedReal;
-                if (remaining < std::chrono::duration<double>::zero()) {
-                    remaining = std::chrono::duration<double>::zero();
+                while (state_.load() == AtmState::Paused) {
+                    if (const auto patienceDeadline = nextQueuePatienceDeadlineLocked()) {
+                        wakeUp_.wait_until(lock, *patienceDeadline);
+                    } else {
+                        wakeUp_.wait(lock);
+                    }
+                    pruneExpiredQueueLocked();
                 }
-                wakeUp_.wait(lock, [this] { return state_.load() != AtmState::Paused; });
                 if (state_.load() == AtmState::Stopped) break;  // stop во время паузы
                 // resume вернул Serving — следующая итерация дообслужит remaining.
             }
@@ -436,7 +506,7 @@ void AtmEngine::beginMaintenanceLocked(std::optional<int> durationSeconds) {
 void AtmEngine::applyMaintenanceRenegingLocked() {
     // Каждый стоящий в очереди с вероятностью renege_probability уходит сразу
     // (§4.5 п.3), остальные остаются ждать (но не дольше своего терпения — это
-    // отработает обычная проверка reneging при выборке). serviceRng_ принадлежит
+    // отработает pruneExpiredQueueLocked по ближайшему дедлайну). serviceRng_ принадлежит
     // только потоку обслуживания, откуда мы и вызваны, поэтому гонки за RNG нет.
     std::bernoulli_distribution leaves(cfg_.maintenance.renegeProbability);
     std::deque<Client> kept;
