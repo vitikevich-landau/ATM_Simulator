@@ -68,15 +68,19 @@ ScreenContent screenContent(const SceneView& v) {
 
 }  // namespace
 
+void fillAtmState(SceneView& view, const AtmSnapshot& atm) {
+    view.state = atm.state;
+    view.stage = atm.currentStage;
+    view.progress = atm.serviceProgress;
+    view.lowCash = atm.lowCash;
+    view.maintenancePending = atm.maintenancePending;
+    view.maintenanceEtaSeconds = atm.maintenanceEtaSeconds;
+}
+
 SceneView buildSceneView(const AtmSnapshot& atm, const std::vector<ClientSnapshot>& queue,
                          int canvasWidth) {
     SceneView v;
-    v.state = atm.state;
-    v.stage = atm.currentStage;
-    v.progress = atm.serviceProgress;
-    v.lowCash = atm.lowCash;
-    v.maintenancePending = atm.maintenancePending;
-    v.maintenanceEtaSeconds = atm.maintenanceEtaSeconds;
+    fillAtmState(v, atm);
 
     // Обслуживаемый клиент — у корпуса, рука к банкомату.
     if (atm.currentClientId) {
@@ -152,10 +156,11 @@ void composeScene(const SceneView& view, SceneCanvas& canvas) {
 
     // --- Человечки и подписи --------------------------------------------------
     for (const SceneActorView& a : view.actors) {
-        canvas.blit(a.x, layout::kActorTopY, poseRows(a.pose), a.tint, a.bold);
+        canvas.blit(a.x, a.y, poseRows(a.pose), a.tint, a.bold);
         // Подпись центрируем под спрайтом (спрайт 3 колонки, центр x+1).
+        // На нижней дорожке (уходящие) подпись клипается краем канвы — не беда.
         const int labelCols = columnsOf(a.label);
-        canvas.text(a.x + 1 - (labelCols - 1) / 2, layout::kLabelY, a.label, a.labelTint);
+        canvas.text(a.x + 1 - (labelCols - 1) / 2, a.y + 3, a.label, a.labelTint);
     }
 
     // --- Хвост очереди, не влезший на сцену -----------------------------------

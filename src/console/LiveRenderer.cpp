@@ -99,6 +99,9 @@ LiveRenderer::LiveRenderer(AtmEngine& engine, const Config& cfg, int forcedWidth
                             scene::layout::kMaxSceneRows);
     const int bodyBudget = termHeight_ - 8 - sceneRows_;
     sceneActive_ = cfg_.ui.scene && width_ >= 84 && bodyBudget >= 12;
+    if (sceneActive_) {
+        presenter_ = std::make_unique<scene::ScenePresenter>(width_, sceneRows_);
+    }
 
     height_ = static_cast<int>(composeLines().size());
 }
@@ -200,7 +203,14 @@ std::vector<std::string> LiveRenderer::composeLines() const {
     if (sceneActive_) {
         L.push_back(C(ansi::grey()) + repeatUtf8("─", width_) + R());
         scene::SceneCanvas canvas(width_, sceneRows_);
-        scene::composeScene(scene::buildSceneView(s, q, width_), canvas);
+        // Живые актёры презентера (двигаются между кадрами); пока он не сделал
+        // ни одного tick (первый кадр, тесты без tick) — статичная сцена по
+        // текущему снимку.
+        if (presenter_ && presenter_->hasTicked()) {
+            scene::composeScene(presenter_->view(), canvas);
+        } else {
+            scene::composeScene(scene::buildSceneView(s, q, width_), canvas);
+        }
         for (std::string& line : canvas.toLines(color)) L.push_back(std::move(line));
     }
 
@@ -371,7 +381,21 @@ void LiveRenderer::renderLoop() {
     const int hz = (cfg_.ui.refreshHz > 0) ? cfg_.ui.refreshHz : 4;
     const auto period = std::chrono::milliseconds(1000 / hz);
     while (running_.load()) {
-        if (!paused_.load()) paintFrame();
+        if (!paused_.load()) {
+            // Сцена: перед отрисовкой согласуем актёров со свежими снимками.
+            // Мутируется ТОЛЬКО состояние презентера (принадлежит этому потоку);
+            // движок отдаёт копии под своим коротким локом, как и всегда.
+            if (presenter_) {
+                const AtmSnapshot snap = engine_.snapshot();
+                const std::vector<ClientSnapshot> queue = engine_.queueSnapshot();
+                const double nowSec =
+                    std::chrono::duration<double>(
+                        std::chrono::steady_clock::now().time_since_epoch())
+                        .count();
+                presenter_->tick(snap, queue, nowSec);
+            }
+            paintFrame();
+        }
         // Прерываемый сон: проснёмся раньше по stop() (running_ станет false).
         std::unique_lock<std::mutex> lock(sleepMutex_);
         sleepCv_.wait_for(lock, period, [this] { return !running_.load(); });

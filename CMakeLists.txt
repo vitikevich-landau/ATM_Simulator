@@ -113,7 +113,8 @@ add_library(atmsim_console
     src/console/scene/GlyphSet.cpp
     src/console/scene/SceneCanvas.cpp
     src/console/scene/SceneSprites.cpp
-    src/console/scene/SceneComposer.cpp)
+    src/console/scene/SceneComposer.cpp
+    src/console/scene/ScenePresenter.cpp)
 target_link_libraries(atmsim_console PUBLIC atmsim_engine)
 
 # --- Исполняемый файл --------------------------------------------------------
@@ -154,6 +155,7 @@ if(ATMSIM_BUILD_TESTS)
         tests/test_renderer.cpp
         tests/test_scene_canvas.cpp
         tests/test_scene_compose.cpp
+        tests/test_scene_presenter.cpp
         tests/test_logger.cpp)
     target_include_directories(atmsim_tests PRIVATE tests)
     target_link_libraries(atmsim_tests PRIVATE atmsim_console)

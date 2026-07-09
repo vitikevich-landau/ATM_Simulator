@@ -16,12 +16,18 @@
 // ============================================================================
 #include <atomic>
 #include <condition_variable>
+#include <memory>
 #include <mutex>
 #include <string>
 #include <thread>
 #include <vector>
 
 #include "atmsim/config/Config.hpp"
+// Полный тип нужен здесь (а не forward-декларация), потому что деструктор
+// LiveRenderer определён inline в этом заголовке (обход LNK2005 на MSVC), а
+// inline-деструктор разрушает unique_ptr<ScenePresenter> — тип обязан быть
+// полным в точке включения.
+#include "atmsim/console/scene/ScenePresenter.hpp"
 #include "atmsim/engine/AtmEngine.hpp"
 
 namespace atmsim {
@@ -106,6 +112,12 @@ private:
     // пределах live-сессии постоянна в любом случае (§4.8.5).
     bool sceneActive_{false};
     int sceneRows_{0};                 // высота сценической полосы (строки)
+
+    // Презентационный слой актёров (этап 3). Существует только при активной
+    // сцене. ПРИНАДЛЕЖИТ render-потоку: tick() зовётся из renderLoop() перед
+    // отрисовкой кадра; извне его дергают только тесты (без запущенного
+    // потока). Движок он не трогает — работает с копиями-снимками.
+    std::unique_ptr<scene::ScenePresenter> presenter_;
 };
 
 }  // namespace atmsim

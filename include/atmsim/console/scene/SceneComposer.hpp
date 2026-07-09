@@ -51,6 +51,7 @@ constexpr int visibleSlots(int width) {
 // Один человечек на сцене: где стоит, как выглядит, что подписано снизу.
 struct SceneActorView {
     int x = 0;                        // левая колонка спрайта (3 колонки)
+    int y = layout::kActorTopY;       // верхняя строка спрайта (дорожка)
     ActorPose pose = ActorPose::Stand;
     Tint tint = Tint::Default;
     bool bold = false;
@@ -73,7 +74,13 @@ struct SceneView {
     int overflowLabelX = 0;               // колонка счётчика «… ещё N»
 };
 
+// Переносит в SceneView поля состояния банкомата из снимка (экран, индикаторы).
+// Общий кусок статичного buildSceneView (этап 2) и ScenePresenter (этап 3).
+void fillAtmState(SceneView& view, const AtmSnapshot& atm);
+
 // Маппинг снимков движка в SceneView со статичными позициями слотов (этап 2).
+// Используется как запасной путь, пока презентер не сделал ни одного tick
+// (первый кадр live-сессии, юнит-тесты композера).
 SceneView buildSceneView(const AtmSnapshot& atm, const std::vector<ClientSnapshot>& queue,
                          int canvasWidth);
 

@@ -17,8 +17,23 @@ const std::vector<std::string>& poseRows(ActorPose pose) {
         "-|\\",
         "/ \\",
     };
+    // Два кадра походки: ноги врозь / ноги вместе. Чередование кадров идёт по
+    // ПОЗИЦИИ актёра (см. ScenePresenter), поэтому темп шагов совпадает со
+    // скоростью движения.
+    static const std::vector<std::string> kWalkA = {
+        " o ",
+        "/|\\",
+        "/ \\",
+    };
+    static const std::vector<std::string> kWalkB = {
+        " o ",
+        "/|\\",
+        " | ",
+    };
     switch (pose) {
         case ActorPose::ReachLeft: return kReachLeft;
+        case ActorPose::WalkA: return kWalkA;
+        case ActorPose::WalkB: return kWalkB;
         case ActorPose::Stand: break;
     }
     return kStand;

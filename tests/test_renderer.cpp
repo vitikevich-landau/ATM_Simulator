@@ -321,3 +321,38 @@ TEST(renderer_start_stop_lifecycle_is_safe) {
 
     CHECK(true);  // цель — отсутствие падений/гонок/порчи памяти (ASan/TSan)
 }
+
+// То же самое, но с АКТИВНОЙ сценой (принудительный размер терминала 100x40,
+// иначе вне TTY сцена не включится): проверяем, что tick презентера в
+// render-потоке не вносит гонок и падений (цель — прогоны TSan/ASan).
+TEST(renderer_lifecycle_with_scene_is_safe) {
+    Config cfg;
+    cfg.clients.count = 15;
+    cfg.simulation.timeScale = 500.0;
+    cfg.ui.color = true;
+    cfg.ui.scene = true;
+    AtmEngine engine(cfg);
+
+    std::thread eng([&] { engine.run(); });
+    std::thread arr([&] { engine.generateArrivals(); });
+
+    std::ostringstream sink;
+    std::streambuf* old = std::cout.rdbuf(sink.rdbuf());
+    {
+        LiveRenderer r(engine, cfg, /*forcedWidth=*/100, /*forcedHeight=*/40);
+        r.start();
+        std::this_thread::sleep_for(150ms);
+        r.pause();
+        std::this_thread::sleep_for(20ms);
+        r.resume();
+        std::this_thread::sleep_for(60ms);
+        r.stop();
+    }
+    std::cout.rdbuf(old);
+
+    engine.requestStop();
+    eng.join();
+    arr.join();
+
+    CHECK(true);  // отсутствие падений/гонок — проверяют санитайзеры
+}
