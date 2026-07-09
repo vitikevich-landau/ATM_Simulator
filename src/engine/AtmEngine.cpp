@@ -1,10 +1,11 @@
 #include "atmsim/engine/AtmEngine.hpp"
 
-#include <algorithm>  // std::min
+#include <algorithm>  // std::min, std::clamp
 #include <chrono>
 #include <mutex>  // std::unique_lock, std::lock_guard
 
 #include "atmsim/core/Operation.hpp"
+#include "atmsim/engine/ServiceStages.hpp"
 
 namespace atmsim {
 
@@ -264,6 +265,17 @@ void AtmEngine::run() {
             state_.store(AtmState::Serving);
             // Длительность обслуживания берём здесь, под локом, из «своего» RNG.
             serviceModelSec = serviceProvider_->nextSeconds(client.requestedOperation, serviceRng_);
+            // Публикуем старт обслуживания для снимков «что делает клиент»:
+            // отработано 0, слайс НЕ открываем — его откроет фаза 2 перед
+            // первым ожиданием. Если открыть слайс уже здесь, интервал до
+            // входа в фазу 2 (лок отпускается между фазами) не попал бы в
+            // servedReal и выбрасывался бы при перебазировании: снимок в
+            // зазоре показал бы прогресс БОЛЬШЕ, чем следующий за ним, — а
+            // пауза, попавшая в зазор, «шла» бы вместо заморозки (§4.6).
+            // Прогресс в зазоре равен честному нулю (зазор — микросекунды).
+            servicePlannedModelSec_ = serviceModelSec;
+            serviceServedRealSec_ = 0.0;
+            serviceSliceStart_.reset();
             haveClient = true;
         }
         if (!haveClient) continue;
@@ -300,6 +312,11 @@ void AtmEngine::run() {
                 if (mode == AtmState::Paused) {
                     // Пауза: замираем до resume/stop, НЕ тратя время службы. Остаток
                     // (realDuration − уже отработанное) дообслужим после возобновления.
+                    // Прогресс для снимков тоже замораживаем: фиксируем уже
+                    // отработанное и гасим признак «слайс идёт» — snapshot()
+                    // перестаёт прибавлять текущее время (§4.6).
+                    serviceServedRealSec_ = servedReal.count();
+                    serviceSliceStart_.reset();
                     while (state_.load() == AtmState::Paused) {
                         if (const auto patienceDeadline = nextQueuePatienceDeadlineLocked()) {
                             wakeUp_.wait_until(lock, *patienceDeadline);
@@ -327,6 +344,11 @@ void AtmEngine::run() {
                 }
 
                 const auto sliceStart = Clock::now();
+                // Публикуем начало слайса: снимки считают прогресс как
+                // «накопленное + (сейчас − начало слайса)», пока мы спим ниже
+                // с отпущенным локом.
+                serviceServedRealSec_ = servedReal.count();
+                serviceSliceStart_ = sliceStart;
                 wakeUp_.wait_for(lock, slice);
                 servedReal += std::chrono::duration<double>(Clock::now() - sliceStart);
                 pruneExpiredQueueLocked();
@@ -376,6 +398,10 @@ void AtmEngine::run() {
             busyModel_ += std::min(actualServiceModelSec, serviceModelSec);
             cashAfter = cashbox_.balance();
             currentClient_.reset();
+            // Обслуживание закончено — прогресс больше не про кого показывать.
+            servicePlannedModelSec_ = 0.0;
+            serviceServedRealSec_ = 0.0;
+            serviceSliceStart_.reset();
 
             // Если мы всё ещё в режиме Serving (проснулись по таймауту, штатно) —
             // выбираем следующий режим. Запрошенное во время обслуживания ТО
@@ -565,6 +591,24 @@ AtmSnapshot AtmEngine::snapshot() const {
     if (currentClient_) {
         s.currentClientId = currentClient_->id;
         s.currentOperation = currentClient_->requestedOperation;
+        // «Что делает клиент»: доля отработанного времени обслуживания и
+        // тематический этап по ней (см. ServiceStages.hpp и комментарий к
+        // servicePlannedModelSec_ в заголовке). Прогресс непрерывен: пока
+        // поток обслуживания спит свой слайс, снимок прибавляет к
+        // накопленному времени длительность текущего слайса «на лету».
+        if (servicePlannedModelSec_ > 0.0) {
+            double servedRealSec = serviceServedRealSec_;
+            if (serviceSliceStart_) {
+                servedRealSec +=
+                    std::chrono::duration<double>(Clock::now() - *serviceSliceStart_).count();
+            }
+            const double realDurationSec = servicePlannedModelSec_ / cfg_.simulation.timeScale;
+            const double frac = (realDurationSec > 0.0) ? servedRealSec / realDurationSec : 1.0;
+            // Джиттер пробуждений может дать чуть больше 1.0 — прижимаем.
+            s.serviceProgress = std::clamp(frac, 0.0, 1.0);
+            s.servicePlannedModelSec = servicePlannedModelSec_;
+            s.currentStage = serviceStageAt(currentClient_->requestedOperation, s.serviceProgress);
+        }
     }
     s.totalServed = totalServed_;
     s.totalLeft = totalLeft_;

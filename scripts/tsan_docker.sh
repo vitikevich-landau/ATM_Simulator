@@ -17,9 +17,9 @@ CORE="src/core/Money.cpp src/core/Types.cpp src/core/Account.cpp src/core/Cashbo
 FLAGS="-std=c++20 -g -O1 -fsanitize=thread -pthread -Iinclude -Itests"
 
 echo "== compile with -fsanitize=thread =="
-g++ $FLAGS $CORE src/reporting/Logger.cpp src/engine/ServiceTimeProvider.cpp src/engine/AtmEngine.cpp \
+g++ $FLAGS $CORE src/reporting/Logger.cpp src/engine/ServiceTimeProvider.cpp src/engine/ServiceStages.cpp src/engine/AtmEngine.cpp \
     src/console/Terminal.cpp src/console/LiveRenderer.cpp \
-    tests/test_main.cpp tests/test_engine.cpp tests/test_renderer.cpp -o build/atmsim_tests_tsan
+    tests/test_main.cpp tests/test_engine.cpp tests/test_renderer.cpp tests/test_service_stages.cpp -o build/atmsim_tests_tsan
 
 # ThreadSanitizer в контейнере спотыкается об ASLR ("unexpected memory mapping").
 # setarch -R отключает рандомизацию адресов только для этого процесса — без

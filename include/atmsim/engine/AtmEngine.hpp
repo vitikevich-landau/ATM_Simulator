@@ -145,6 +145,21 @@ private:
     std::mt19937_64 arrivalRng_;       // только поток прихода
 
     std::optional<Client> currentClient_;  // кого обслуживаем сейчас (защищён mutex_)
+
+    // Прогресс ТЕКУЩЕГО обслуживания — для снимков «что делает клиент» (§4.8).
+    // Пишет ТОЛЬКО поток обслуживания и ТОЛЬКО под mutex_; snapshot() читает
+    // под ним же. Прогресс не хранится готовым числом — он вычисляется в
+    // snapshot() из этих трёх полей, чтобы расти НЕПРЕРЫВНО, а не скачками по
+    // пробуждениям потока обслуживания (между пробуждениями тот спит с
+    // отпущенным локом и ничего обновлять не может):
+    //   отработано_реальных_сек = serviceServedRealSec_
+    //                           + (сейчас - serviceSliceStart_, если слайс идёт)
+    //   прогресс = отработано / (servicePlannedModelSec_ / time_scale)
+    // На паузе слайс не идёт (serviceSliceStart_ пуст) — прогресс замирает,
+    // как и таймер службы (§4.6). Вне обслуживания planned == 0.
+    double servicePlannedModelSec_{0.0};  // полная длительность (модельные сек.)
+    double serviceServedRealSec_{0.0};    // чистое реальное время ДО текущего слайса
+    std::optional<std::chrono::steady_clock::time_point> serviceSliceStart_;  // начало слайса
     std::optional<OperationType> lastCashMove_;  // направление посл. движения кассы
     std::uint64_t totalServed_{0};
     std::uint64_t totalLeft_{0};              // всего ушли (терпение + ТО)
