@@ -51,7 +51,7 @@ find_package(Threads REQUIRED)
 target_link_libraries(atmsim_flags INTERFACE Threads::Threads)
 
 if(MSVC)
-    target_compile_options(atmsim_flags INTERFACE /W4 /permissive-)
+    target_compile_options(atmsim_flags INTERFACE /W4 /permissive- /utf-8)
     if(ATMSIM_WARNINGS_AS_ERRORS)
         target_compile_options(atmsim_flags INTERFACE /WX)
     endif()

@@ -139,7 +139,7 @@ void composeScene(const SceneView& view, SceneCanvas& canvas) {
     // --- Эффект: спиннер связи с банком в углу экрана --------------------------
     // Живой индикатор «банкомат думает» на этапе запроса к банку.
     if (view.effectsEnabled && view.stage == ServiceStage::BankRequest) {
-        static const char32_t kSpinner[4] = {U'|', U'/', U'─', U'\\'};
+        static const char32_t kSpinner[4] = {U'|', U'/', U'\u2500', U'\\'};
         canvas.put(screenX + kAtmScreenWidth - 1, 3, kSpinner[view.animPhase % 4], Tint::Cyan,
                    /*bold=*/true);
     }
