@@ -100,13 +100,18 @@ add_library(atmsim_engine
     src/engine/AtmEngine.cpp)
 target_link_libraries(atmsim_engine PUBLIC atmsim_config atmsim_reporting)
 
-# --- Консоль администратора (M3/M4 + M6 дашборд + M7 сигналы) -----------------
+# --- Консоль администратора (M3/M4 + M6 дашборд + M7 сигналы + сцена) ---------
+# Подкаталог scene/ — анимированная сцена дашборда (feature/scene): клеточная
+# канва, спрайты, презентационный слой актёров. Живёт в console-слое, потому
+# что это чистая презентация поверх снимков движка.
 add_library(atmsim_console
     src/console/CommandParser.cpp
     src/console/Terminal.cpp
     src/console/LiveRenderer.cpp
     src/console/Signals.cpp
-    src/console/AdminConsole.cpp)
+    src/console/AdminConsole.cpp
+    src/console/scene/GlyphSet.cpp
+    src/console/scene/SceneCanvas.cpp)
 target_link_libraries(atmsim_console PUBLIC atmsim_engine)
 
 # --- Исполняемый файл --------------------------------------------------------
@@ -145,6 +150,7 @@ if(ATMSIM_BUILD_TESTS)
         tests/test_engine.cpp
         tests/test_parser.cpp
         tests/test_renderer.cpp
+        tests/test_scene_canvas.cpp
         tests/test_logger.cpp)
     target_include_directories(atmsim_tests PRIVATE tests)
     target_link_libraries(atmsim_tests PRIVATE atmsim_console)
