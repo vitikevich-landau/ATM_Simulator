@@ -136,6 +136,14 @@ void composeScene(const SceneView& view, SceneCanvas& canvas) {
                      screen.lines[static_cast<std::size_t>(row)], screen.tint);
     }
 
+    // --- Эффект: спиннер связи с банком в углу экрана --------------------------
+    // Живой индикатор «банкомат думает» на этапе запроса к банку.
+    if (view.effectsEnabled && view.stage == ServiceStage::BankRequest) {
+        static const char32_t kSpinner[4] = {U'|', U'/', U'─', U'\\'};
+        canvas.put(screenX + kAtmScreenWidth - 1, 3, kSpinner[view.animPhase % 4], Tint::Cyan,
+                   /*bold=*/true);
+    }
+
     // --- Индикаторы корпуса: слот карты и лоток купюр -------------------------
     // Подсвечиваются на «своих» этапах: слот — когда карта вставляется или
     // забирается, лоток — на этапах движения наличных. Низкая касса красит
@@ -155,6 +163,26 @@ void composeScene(const SceneView& view, SceneCanvas& canvas) {
         canvas.text(trayX, 7, "[══]", Tint::Green, /*bold=*/true);
     }
 
+    // --- Эффект: купюры летят между лотком и клиентом --------------------------
+    // Выдача — от лотка к клиенту, внесение — от клиента к лотку. Пара «купюр»
+    // (=) со сдвигом фаз, дорожка — узкий зазор между корпусом и человечком.
+    if (view.effectsEnabled &&
+        (view.stage == ServiceStage::DispenseCash || view.stage == ServiceStage::InsertCash)) {
+        const int laneX0 = trayX + 4;                    // сразу за «[══]»
+        const int laneLen = layout::kServeX - laneX0;    // до обслуживаемого
+        if (laneLen > 1) {
+            for (int i = 0; i < 2; ++i) {
+                // Сдвиг фаз i*3 взаимно прост с типичной длиной дорожки —
+                // купюры не сливаются в одну клетку.
+                const int step = (view.animPhase + i * 3) % laneLen;
+                const int x = (view.stage == ServiceStage::DispenseCash)
+                                  ? laneX0 + step             // из лотка к клиенту
+                                  : laneX0 + laneLen - 1 - step;  // от клиента в лоток
+                canvas.put(x, 7, U'=', Tint::Green, /*bold=*/true);
+            }
+        }
+    }
+
     // --- Человечки и подписи --------------------------------------------------
     for (const SceneActorView& a : view.actors) {
         canvas.blit(a.x, a.y, poseRows(a.pose), a.tint, a.bold);
@@ -164,6 +192,12 @@ void composeScene(const SceneView& view, SceneCanvas& canvas) {
         canvas.text(a.x + 1 - (labelCols - 1) / 2, a.y + 3, a.label, a.labelTint);
         // Терпение на исходе — восклицательный знак над головой.
         if (a.nervous) canvas.put(a.x + 1, a.y - 1, U'!', Tint::Red, /*bold=*/true);
+        // Эффект: «пар» злости над уходящим не солоно хлебавши (мерцает в
+        // такт шагам — фаза завязана на позицию).
+        if (view.effectsEnabled && a.tint == Tint::Red && a.y != layout::kActorTopY &&
+            (a.x + view.animPhase) % 2 == 0) {
+            canvas.put(a.x + 1, a.y - 1, U'~', Tint::Red);
+        }
     }
 
     // --- Хвост очереди, не влезший на сцену -----------------------------------

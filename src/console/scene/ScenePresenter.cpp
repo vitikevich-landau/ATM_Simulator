@@ -49,12 +49,13 @@ Fate lookupFate(const std::vector<OperationRecord>& opsTail, ClientId id) {
 
 }  // namespace
 
-ScenePresenter::ScenePresenter(int canvasWidth, int sceneRows)
+ScenePresenter::ScenePresenter(int canvasWidth, int sceneRows, bool effects)
     : width_(canvasWidth),
       sceneRows_(sceneRows),
       // Дорожка выхода — три нижние строки сцены (спрайт высотой 3): уходящие
       // не толкутся на линии очереди, а «проходят перед камерой» внизу.
-      exitLaneY_(sceneRows - 3) {}
+      exitLaneY_(sceneRows - 3),
+      effects_(effects) {}
 
 double ScenePresenter::posAt(const Tween& t, double now) {
     if (t.dur <= 0.0) return t.toX;
@@ -239,6 +240,9 @@ void ScenePresenter::rebuildView(const AtmSnapshot& atm, const std::vector<Clien
                                  double now) {
     view_ = SceneView{};
     fillAtmState(view_, atm);
+    view_.effectsEnabled = effects_;
+    // Фаза эффектов 0..7 от рендер-часов (~8 шагов/сек): спиннер, купюры, пар.
+    view_.animPhase = static_cast<int>(std::fmod(now * 8.0, 8.0));
 
     const int slots = layout::visibleSlots(width_);
     const int shown = std::min<int>(slots, static_cast<int>(queue.size()));

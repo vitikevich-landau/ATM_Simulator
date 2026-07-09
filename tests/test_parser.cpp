@@ -100,3 +100,21 @@ TEST(parser_live) {
     CHECK(parseCommand("live").type == CommandType::Live);
     CHECK(parseCommand("live off").type == CommandType::LiveOff);
 }
+
+// scene [on|off]: включение/выключение анимированной сцены; без аргумента —
+// переключение (onOff пуст); мусорный аргумент — осмысленная ошибка.
+TEST(parser_scene) {
+    const Command toggle = parseCommand("scene");
+    CHECK(toggle.type == CommandType::Scene);
+    CHECK(!toggle.onOff.has_value());
+
+    const Command on = parseCommand("scene on");
+    CHECK(on.type == CommandType::Scene);
+    CHECK(on.onOff.has_value() && *on.onOff);
+
+    const Command off = parseCommand("scene off");
+    CHECK(off.type == CommandType::Scene);
+    CHECK(off.onOff.has_value() && !*off.onOff);
+
+    CHECK(!parseCommand("scene вбок").error.empty());
+}

@@ -58,6 +58,8 @@ void AdminConsole::printHelp() const {
         "  pause / resume                    — приостановить / возобновить обслуживание\n"
         "  maintenance start [сек] / stop    — техобслуживание\n"
         "  live / live off                   — включить / выключить живой дашборд\n"
+        "  scene [on|off]                    — анимированная сцена над таблицей (нужен\n"
+        "                                      терминал от ~84x30; без аргумента — переключить)\n"
         "  export <file>                     — выгрузить журнал операций в CSV\n"
         "  restart                           — новый прогон с нуля\n"
         "  stop                              — плавно остановить и выйти\n";
@@ -284,6 +286,15 @@ AdminConsole::Next AdminConsole::runCommandLoop() {
                 std::cout << "Живой режим недоступен: stdout не терминал.\n";
                 break;
             case CommandType::LiveOff: break;  // уже в командном режиме
+            case CommandType::Scene:
+                // В командном режиме сцена не видна — просто запоминаем выбор,
+                // он применится при входе в live (renderer создаётся заново).
+                cfg_.ui.scene = c.onOff ? *c.onOff : !cfg_.ui.scene;
+                std::cout << (cfg_.ui.scene
+                                  ? "Сцена включена — отобразится в живом режиме (нужен "
+                                    "терминал от ~84x30; команда live).\n"
+                                  : "Сцена выключена.\n");
+                break;
             case CommandType::Restart:
                 std::cout << "Перезапуск прогона...\n";
                 return Next::Restart;
@@ -510,6 +521,20 @@ AdminConsole::Next AdminConsole::runLiveSession() {
             case CommandType::MaintenanceStop:  engine_.endMaintenance(); break;
             case CommandType::Live: break;  // уже в живом режиме
             case CommandType::LiveOff: result = Next::Command; exitLoop = true; break;
+            case CommandType::Scene: {
+                // Смена режима сцены = перезапуск live-сессии тем же путём, что
+                // live off -> live: новый LiveRenderer заново решает «влезает ли
+                // сцена», пересчитывает высоту кадра и строку ввода. §4.8.5
+                // (постоянная высота) действует В ПРЕДЕЛАХ сессии — здесь
+                // сессия легально завершается и начинается новая.
+                const bool want = c.onOff ? *c.onOff : !cfg_.ui.scene;
+                if (want != cfg_.ui.scene) {
+                    cfg_.ui.scene = want;
+                    result = Next::Live;
+                    exitLoop = true;
+                }
+                break;
+            }
             case CommandType::Queue:
                 // В живом режиме очередь листаем интерактивно (стрелки/PgUp/PgDn),
                 // а не показываем статичным полноэкранным списком.

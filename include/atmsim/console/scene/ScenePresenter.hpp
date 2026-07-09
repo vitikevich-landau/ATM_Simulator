@@ -47,8 +47,9 @@ namespace atmsim::scene {
 class ScenePresenter {
 public:
     // canvasWidth/sceneRows — размеры сценической полосы (фиксированы на
-    // всю live-сессию, как и у LiveRenderer).
-    ScenePresenter(int canvasWidth, int sceneRows);
+    // всю live-сессию, как и у LiveRenderer); effects — ui.scene_effects
+    // (спиннер связи с банком, купюры, «пар» злости).
+    explicit ScenePresenter(int canvasWidth, int sceneRows, bool effects = true);
 
     // Согласовать реестр актёров со снимками движка и продвинуть анимации к
     // моменту nowSec. Зовётся один раз на кадр ПЕРЕД composeLines().
@@ -114,6 +115,7 @@ private:
     int width_;
     int sceneRows_;
     int exitLaneY_;                    // дорожка выхода (нижние строки сцены)
+    bool effects_;                     // ui.scene_effects
     bool teleportNext_ = true;         // первый tick всегда расставляет мгновенно
     bool ticked_ = false;
 

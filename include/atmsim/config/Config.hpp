@@ -88,6 +88,7 @@ struct UiConfig {
     bool scene = false;
     int sceneFps = 15;            // частота кадров сцены, 5..30 (задействуется этапом 5)
     int sceneRows = 10;           // высота сценической полосы, 10..14 строк
+    bool sceneEffects = true;     // спецэффекты: спиннер связи, купюры, «пар» злости
 };
 
 struct LoggingConfig {

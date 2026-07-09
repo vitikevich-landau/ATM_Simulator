@@ -222,6 +222,7 @@ Config ConfigLoader::loadFromString(const std::string& jsonText) {
             c.ui.scene = u.value("scene", c.ui.scene);
             c.ui.sceneFps = u.value("scene_fps", c.ui.sceneFps);
             c.ui.sceneRows = u.value("scene_rows", c.ui.sceneRows);
+            c.ui.sceneEffects = u.value("scene_effects", c.ui.sceneEffects);
         }
 
         if (j.contains("logging")) {

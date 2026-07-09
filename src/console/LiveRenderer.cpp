@@ -100,7 +100,8 @@ LiveRenderer::LiveRenderer(AtmEngine& engine, const Config& cfg, int forcedWidth
     const int bodyBudget = termHeight_ - 8 - sceneRows_;
     sceneActive_ = cfg_.ui.scene && width_ >= 84 && bodyBudget >= 12;
     if (sceneActive_) {
-        presenter_ = std::make_unique<scene::ScenePresenter>(width_, sceneRows_);
+        presenter_ = std::make_unique<scene::ScenePresenter>(width_, sceneRows_,
+                                                             cfg_.ui.sceneEffects);
     }
 
     height_ = static_cast<int>(composeLines().size());
@@ -351,7 +352,7 @@ std::vector<std::string> LiveRenderer::composeLinesFrom(
     } else {
         L.push_back(fit(C(ansi::grey()) +
                         "команды: pause · resume · maintenance N|stop · client N · queue · "
-                        "stats · export F · live off · stop" + R(), width_));
+                        "stats · scene on|off · export F · live off · stop" + R(), width_));
     }
 
     return L;

@@ -52,6 +52,8 @@ TEST(scene_sprites_use_only_allowed_glyphs) {
     };
     checkRows(scene::poseRows(ActorPose::Stand));
     checkRows(scene::poseRows(ActorPose::ReachLeft));
+    checkRows(scene::poseRows(ActorPose::WalkA));
+    checkRows(scene::poseRows(ActorPose::WalkB));
     checkRows(scene::atmArtRows());
     // Корпус банкомата — ровно заявленные размеры (спрайт непрозрачный).
     CHECK_EQ(scene::atmArtRows().size(), static_cast<std::size_t>(scene::kAtmArtRows));
@@ -235,4 +237,46 @@ TEST(scene_config_keys_parse_and_validate) {
         threw = true;
     }
     CHECK(threw);
+}
+
+// Слой эффектов (этап 6): спиннер связи с банком, купюры у лотка; всё
+// отключается флагом effectsEnabled (ui.scene_effects).
+TEST(scene_compose_effects_layer) {
+    using scene::utf8::decode;
+    AtmSnapshot atm;
+    atm.state = AtmState::Serving;
+    atm.currentClientId = 1;
+    atm.currentOperation = OperationType::Withdraw;
+    atm.currentStage = ServiceStage::BankRequest;
+    atm.serviceProgress = 0.5;
+
+    SceneView v = scene::buildSceneView(atm, {}, 90);
+    v.effectsEnabled = true;
+    v.animPhase = 1;  // фаза 1 -> кадр спиннера '/'
+    SceneCanvas canvas(90, 10);
+    scene::composeScene(v, canvas);
+    // Спиннер живёт в правом углу экрана банкомата: колонка screenX+11 (=14).
+    const std::u32string screenRow = decode(canvas.toLines(false)[3]);
+    CHECK(screenRow[14] == U'/');
+
+    // Выдача наличных: две «купюры» (=) на дорожке лотка (строка 7).
+    atm.currentStage = ServiceStage::DispenseCash;
+    v = scene::buildSceneView(atm, {}, 90);
+    v.effectsEnabled = true;
+    v.animPhase = 0;
+    scene::composeScene(v, canvas);
+    const std::u32string trayRow = decode(canvas.toLines(false)[7]);
+    int bills = 0;
+    for (int x = 15; x < scene::layout::kServeX; ++x) {
+        if (trayRow[static_cast<std::size_t>(x)] == U'=') ++bills;
+    }
+    CHECK_EQ(bills, 2);
+
+    // Флаг выключен — дорожка чиста, спиннера нет.
+    v.effectsEnabled = false;
+    scene::composeScene(v, canvas);
+    const std::u32string quietRow = decode(canvas.toLines(false)[7]);
+    for (int x = 15; x < scene::layout::kServeX; ++x) {
+        CHECK(quietRow[static_cast<std::size_t>(x)] != U'=');
+    }
 }
