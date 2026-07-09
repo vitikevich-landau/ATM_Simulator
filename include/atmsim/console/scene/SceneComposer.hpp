@@ -57,6 +57,7 @@ struct SceneActorView {
     bool bold = false;
     std::string label;                // подпись под спрайтом («#12»)
     Tint labelTint = Tint::Grey;
+    bool nervous = false;             // терпение на исходе: бейдж «!» над головой
 };
 
 // Всё, что нужно нарисовать в одном кадре сцены.

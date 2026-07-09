@@ -30,10 +30,36 @@ const std::vector<std::string>& poseRows(ActorPose pose) {
         "/|\\",
         " | ",
     };
+    // Idle-вариации: перенос веса с руки на пояс (скобка = согнутая рука).
+    static const std::vector<std::string> kIdleShiftL = {
+        " o ",
+        "(|\\",
+        "/ \\",
+    };
+    static const std::vector<std::string> kIdleShiftR = {
+        " o ",
+        "/|)",
+        "/ \\",
+    };
+    // Взмах рукой (фиджет) и ликование (руки вверх).
+    static const std::vector<std::string> kWave = {
+        " o/",
+        "/| ",
+        "/ \\",
+    };
+    static const std::vector<std::string> kCheer = {
+        "\\o/",
+        " | ",
+        "/ \\",
+    };
     switch (pose) {
         case ActorPose::ReachLeft: return kReachLeft;
         case ActorPose::WalkA: return kWalkA;
         case ActorPose::WalkB: return kWalkB;
+        case ActorPose::IdleShiftL: return kIdleShiftL;
+        case ActorPose::IdleShiftR: return kIdleShiftR;
+        case ActorPose::Wave: return kWave;
+        case ActorPose::Cheer: return kCheer;
         case ActorPose::Stand: break;
     }
     return kStand;

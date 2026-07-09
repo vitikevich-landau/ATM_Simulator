@@ -52,7 +52,11 @@ public:
 
     // Согласовать реестр актёров со снимками движка и продвинуть анимации к
     // моменту nowSec. Зовётся один раз на кадр ПЕРЕД composeLines().
-    void tick(const AtmSnapshot& atm, const std::vector<ClientSnapshot>& queue, double nowSec);
+    // opsTail — хвост ленты операций: по нему определяется СУДЬБА исчезнувшего
+    // из снимка клиента (операция OK -> ушёл довольным, FAIL -> растерянным,
+    // записи нет -> не дождался). Пустой хвост допустим (тесты этапа 3).
+    void tick(const AtmSnapshot& atm, const std::vector<ClientSnapshot>& queue, double nowSec,
+              const std::vector<OperationRecord>& opsTail = {});
 
     // Был ли хотя бы один tick (до него view() пуста, а composeLines()
     // откатывается на статичную сцену buildSceneView).
@@ -70,12 +74,14 @@ private:
     // Стадия жизни актёра на сцене (не путать с ClientState движка: это чисто
     // презентационное состояние, движок о нём не знает).
     enum class ActorState {
-        WalkIn,      // входит с правого края к своему месту
-        QueueIdle,   // стоит в очереди
-        Advance,     // продвигается к новому слоту / к банкомату
-        AtAtm,       // у банкомата (обслуживается)
-        LeaveHappy,  // уходит обслуженный
-        LeaveAngry,  // уходит, не дождавшись
+        WalkIn,        // входит с правого края к своему месту
+        QueueIdle,     // стоит в очереди
+        Advance,       // продвигается к новому слоту / к банкомату
+        AtAtm,         // у банкомата (обслуживается)
+        LeavePending,  // исчез из снимка; ждём записи в ленте (грейс 2 тика)
+        LeaveHappy,    // уходит обслуженный (операция OK)
+        LeavePuzzled,  // уходит растерянный (операция FAIL)
+        LeaveAngry,    // уходит, не дождавшись (записи в ленте нет)
     };
 
     // Твин позиции: плавный ход fromX -> toX за [start, start+dur].
@@ -93,12 +99,15 @@ private:
         int y = layout::kActorTopY;   // строка спрайта (дорожка)
         bool serving = false;          // текущая роль по последнему снимку
         double stateSince = 0.0;       // когда вошёл в текущую стадию (для cap)
+        int graceTicks = 0;            // остаток грейс-периода LeavePending
     };
 
     static double posAt(const Tween& t, double now);
     // Перенаправить актёра к цели targetX: новый твин из ТЕКУЩЕЙ точки с
     // catch-up скоростью; телепорт при дистанции больше полусцены.
     void retarget(Actor& a, double targetX, double now) const;
+    // Отправить актёра к правому краю по дорожке выхода с настроением mood.
+    void beginLeave(Actor& a, ActorState mood, double now) const;
     void rebuildView(const AtmSnapshot& atm, const std::vector<ClientSnapshot>& queue,
                      double now);
 

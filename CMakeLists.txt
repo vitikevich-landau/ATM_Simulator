@@ -114,7 +114,8 @@ add_library(atmsim_console
     src/console/scene/SceneCanvas.cpp
     src/console/scene/SceneSprites.cpp
     src/console/scene/SceneComposer.cpp
-    src/console/scene/ScenePresenter.cpp)
+    src/console/scene/ScenePresenter.cpp
+    src/console/scene/ActorAnim.cpp)
 target_link_libraries(atmsim_console PUBLIC atmsim_engine)
 
 # --- Исполняемый файл --------------------------------------------------------

@@ -9,6 +9,7 @@
 #include <string>
 #include <vector>
 
+#include "atmsim/console/scene/ActorAnim.hpp"
 #include "atmsim/console/scene/ScenePresenter.hpp"
 #include "simple_test.hpp"
 
@@ -48,6 +49,13 @@ const scene::SceneActorView* findActor(const SceneView& v, const std::string& la
     return nullptr;
 }
 
+// Стоит ли актёр «на месте» (этап 4 добавил живой idle: переминания и взмахи,
+// поэтому у стоящего может быть любая из idle-поз, но не шаг и не акт).
+bool isIdlePose(scene::ActorPose p) {
+    return p == scene::ActorPose::Stand || p == scene::ActorPose::IdleShiftL ||
+           p == scene::ActorPose::IdleShiftR || p == scene::ActorPose::Wave;
+}
+
 }  // namespace
 
 // Первый tick — телепорт-режим: актёры сразу по местам, без анимаций входа.
@@ -66,9 +74,10 @@ TEST(presenter_first_tick_places_instantly) {
     CHECK_EQ(a1->x, layout::kServeX);
     CHECK_EQ(a2->x, layout::slotX(0));
     CHECK_EQ(a3->x, layout::slotX(1));
-    // Обслуживаемый — у банкомата с протянутой рукой, остальные стоят.
+    // Обслуживаемый — у банкомата (этап без снимка -> рука к панели),
+    // остальные стоят в какой-то из idle-поз.
     CHECK(a1->pose == scene::ActorPose::ReachLeft);
-    CHECK(a2->pose == scene::ActorPose::Stand);
+    CHECK(isIdlePose(a2->pose));
 }
 
 // Новый клиент входит с правого края и ПЛАВНО доходит до слота.
@@ -91,7 +100,7 @@ TEST(presenter_walkin_moves_towards_slot) {
 
     p.tick(serving(1), queueOf({2, 3}), 5.0);  // давно дошёл
     CHECK_EQ(findActor(p.view(), "#3")->x, layout::slotX(1));
-    CHECK(findActor(p.view(), "#3")->pose == scene::ActorPose::Stand);
+    CHECK(isIdlePose(findActor(p.view(), "#3")->pose));
 }
 
 // Очередь продвинулась — актёры плавно перетекают к новым слотам, без скачков.
@@ -116,42 +125,60 @@ TEST(presenter_advance_is_smooth) {
 }
 
 // Обслуженный уходит по нижней дорожке зелёным и исчезает за краем; ожидавший,
-// пропавший из очереди, уходит красным.
+// пропавший из очереди, уходит красным (после грейс-периода судьбы — записи в
+// ленте у него нет и не будет).
 TEST(presenter_leavers_walk_out_with_mood) {
     ScenePresenter p(kW, kRows);
     p.tick(serving(1), queueOf({2, 3}), 0.0);
 
-    // #1 обслужен (исчез), #3 не дождался (исчез из очереди).
-    p.tick(serving(2), queueOf({}), 1.0);
-    const scene::SceneActorView* happy = findActor(p.view(), "#1");
-    const scene::SceneActorView* angry = findActor(p.view(), "#3");
-    CHECK(happy != nullptr);
-    CHECK(angry != nullptr);
-    CHECK(happy->tint == scene::Tint::Green);
-    CHECK(angry->tint == scene::Tint::Red);
-    CHECK_EQ(happy->y, kRows - 3);   // нижняя дорожка выхода
-    CHECK_EQ(angry->y, kRows - 3);
-    const int happyX = happy->x;     // указатели умирают на следующем tick
+    // #1 обслужен (исчез; запись об успехе уже в ленте), #3 исчез из очереди.
+    OperationRecord ok;
+    ok.clientId = 1;
+    ok.type = OperationType::CheckBalance;
+    ok.success = true;
+    const std::vector<OperationRecord> ops = {ok};
 
-    p.tick(serving(2), queueOf({}), 1.5);
+    p.tick(serving(2), queueOf({}), 1.0, ops);
+    const scene::SceneActorView* happy = findActor(p.view(), "#1");
+    CHECK(happy != nullptr);
+    CHECK(happy->tint == scene::Tint::Green);  // судьба известна сразу
+    CHECK_EQ(happy->y, kRows - 3);             // нижняя дорожка выхода
+    const int happyX = happy->x;               // указатели умирают на следующем tick
+
+    // #3 два тика ждёт свою запись (грейс), потом уходит красным.
+    p.tick(serving(2), queueOf({}), 1.1, ops);
+    p.tick(serving(2), queueOf({}), 1.2, ops);
+    const scene::SceneActorView* angry = findActor(p.view(), "#3");
+    CHECK(angry != nullptr);
+    CHECK(angry->tint == scene::Tint::Red);
+    CHECK_EQ(angry->y, kRows - 3);
+
+    p.tick(serving(2), queueOf({}), 1.6, ops);
     CHECK(findActor(p.view(), "#1")->x > happyX);  // идут вправо
 
-    p.tick(serving(2), queueOf({}), 10.0);           // давно ушли
+    p.tick(serving(2), queueOf({}), 10.0, ops);    // давно ушли
     CHECK(findActor(p.view(), "#1") == nullptr);
     CHECK(findActor(p.view(), "#3") == nullptr);
 }
 
-// Одновременных уходящих не больше четырёх — старейшие вытесняются мгновенно.
+// Одновременных уходящих (включая ждущих судьбу) не больше четырёх —
+// старейшие вытесняются мгновенно.
 TEST(presenter_caps_simultaneous_leavers) {
     ScenePresenter p(kW, kRows);
     p.tick(AtmSnapshot{}, queueOf({1, 2, 3, 4, 5, 6}), 0.0);
 
     p.tick(AtmSnapshot{}, queueOf({}), 1.0);  // все шестеро исчезли разом
+    CHECK(p.view().actors.size() <= std::size_t{4});
+
+    // После грейса оставшиеся уходят красными — и их по-прежнему не больше 4.
+    p.tick(AtmSnapshot{}, queueOf({}), 1.1);
+    p.tick(AtmSnapshot{}, queueOf({}), 1.2);
     int leavers = 0;
     for (const auto& a : p.view().actors) {
         if (a.tint == scene::Tint::Red || a.tint == scene::Tint::Green) ++leavers;
     }
     CHECK(leavers <= 4);
+    CHECK(leavers > 0);  // уходы реально проигрываются, а не съедены капом
 }
 
 // Хвост очереди за видимыми слотами не спавнится (виртуализация) и учтён в
@@ -214,4 +241,114 @@ TEST(presenter_is_deterministic) {
         return dump;
     };
     CHECK_EQ(run(), run());
+}
+
+// ---------------------------------------------------------------------------
+// Этап 4: судьбы по ленте операций, нервозность, живые позы.
+// ---------------------------------------------------------------------------
+
+namespace {
+
+OperationRecord record(ClientId id, bool success) {
+    OperationRecord r;
+    r.clientId = id;
+    r.type = OperationType::Withdraw;
+    r.success = success;
+    if (!success) r.errorMessage = "нет денег";
+    return r;
+}
+
+}  // namespace
+
+// Судьба по ленте: успех — зелёный, отказ — жёлтый с «?» в подписи,
+// без записи — красный (не дождался) после грейс-периода.
+TEST(presenter_fates_from_operations_tail) {
+    ScenePresenter p(kW, kRows);
+    p.tick(serving(1), queueOf({2, 3}), 0.0);
+
+    // #1 обслужен успешно, #3 исчез из очереди без записи.
+    std::vector<OperationRecord> ops = {record(1, true)};
+    p.tick(serving(2), queueOf({}), 0.1, ops);
+    CHECK(findActor(p.view(), "#1")->tint == scene::Tint::Green);
+
+    // #3 ждёт судьбу (грейс): ещё не уходит и не красный.
+    const scene::SceneActorView* pending = findActor(p.view(), "#3");
+    CHECK(pending != nullptr);
+    CHECK(pending->tint == scene::Tint::Default);
+
+    // Грейс истёк (2 тика без записи) — не дождался, уходит красным.
+    p.tick(serving(2), queueOf({}), 0.2, ops);
+    p.tick(serving(2), queueOf({}), 0.3, ops);
+    CHECK(findActor(p.view(), "#3")->tint == scene::Tint::Red);
+}
+
+// Отказ операции: клиент уходит растерянным (жёлтый, «#id?»).
+TEST(presenter_failed_operation_leaves_puzzled) {
+    ScenePresenter p(kW, kRows);
+    p.tick(serving(1), queueOf({}), 0.0);
+
+    std::vector<OperationRecord> ops = {record(1, false)};
+    p.tick(AtmSnapshot{}, queueOf({}), 0.1, ops);
+    const scene::SceneActorView* puzzled = findActor(p.view(), "#1?");
+    CHECK(puzzled != nullptr);
+    CHECK(puzzled->tint == scene::Tint::Yellow);
+}
+
+// Терпение на исходе — бейдж нервозности и «дёрганая» поза.
+TEST(presenter_marks_nervous_clients) {
+    ScenePresenter p(kW, kRows);
+    std::vector<ClientSnapshot> q = queueOf({1, 2});
+    q[0].waitedSeconds = 10.0;
+    q[0].remainingPatience = 100.0;   // спокоен (доля ~0.9)
+    q[1].waitedSeconds = 95.0;
+    q[1].remainingPatience = 5.0;     // на пределе (доля 0.05 < 0.15)
+    p.tick(AtmSnapshot{}, q, 0.0);
+    CHECK(!findActor(p.view(), "#1")->nervous);
+    CHECK(findActor(p.view(), "#2")->nervous);
+}
+
+// Idle-анимации детерминированы и разнообразны: одна и та же пара (id, t)
+// всегда даёт одну позу; на длинном окне встречаются и переминания, и взмах.
+TEST(actor_anim_idle_is_deterministic_and_varied) {
+    using scene::ActorPose;
+    bool sawShift = false;
+    bool sawWave = false;
+    for (int i = 0; i < 400; ++i) {
+        const double t = i * 0.25;
+        const ActorPose a = scene::pickIdlePose(7, t);
+        const ActorPose b = scene::pickIdlePose(7, t);
+        CHECK(a == b);  // детерминизм
+        if (a == ActorPose::IdleShiftL || a == ActorPose::IdleShiftR) sawShift = true;
+        if (a == ActorPose::Wave) sawWave = true;
+    }
+    CHECK(sawShift);
+    CHECK(sawWave);
+    // Разные клиенты — разные фазы: в один момент позы не обязаны совпадать
+    // (проверяем, что за окно хоть раз разошлись).
+    bool diverged = false;
+    for (int i = 0; i < 40 && !diverged; ++i) {
+        diverged = scene::pickIdlePose(1, i * 0.5) != scene::pickIdlePose(2, i * 0.5);
+    }
+    CHECK(diverged);
+}
+
+// Акты у банкомата: «ручной» этап шевелит рукой (позы чередуются во времени),
+// «машинный» — переминание, как в очереди.
+TEST(actor_anim_act_poses_by_stage) {
+    using scene::ActorPose;
+    // EnterPin — ручной: на протяжении секунды должны встретиться обе позы.
+    bool sawReach = false;
+    bool sawStand = false;
+    for (int i = 0; i < 8; ++i) {
+        const ActorPose pose = scene::pickActPose(1, ServiceStage::EnterPin, i * 0.25);
+        if (pose == ActorPose::ReachLeft) sawReach = true;
+        if (pose == ActorPose::Stand) sawStand = true;
+    }
+    CHECK(sawReach);
+    CHECK(sawStand);
+    // BankRequest — машинный: рука к панели не тянется.
+    for (int i = 0; i < 8; ++i) {
+        CHECK(scene::pickActPose(1, ServiceStage::BankRequest, i * 0.25) !=
+              ActorPose::ReachLeft);
+    }
 }

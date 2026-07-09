@@ -63,7 +63,8 @@ ScreenContent screenContent(const SceneView& v) {
         case AtmState::Idle:
             break;
     }
-    return {{"", "СВОБОДНО", ""}, Tint::Green};
+    // Простой: приглашаем; при низкой кассе экран честно предупреждает.
+    return {{"", "СВОБОДНО", v.lowCash ? "КАССА НИЗКА" : ""}, Tint::Green};
 }
 
 }  // namespace
@@ -161,6 +162,8 @@ void composeScene(const SceneView& view, SceneCanvas& canvas) {
         // На нижней дорожке (уходящие) подпись клипается краем канвы — не беда.
         const int labelCols = columnsOf(a.label);
         canvas.text(a.x + 1 - (labelCols - 1) / 2, a.y + 3, a.label, a.labelTint);
+        // Терпение на исходе — восклицательный знак над головой.
+        if (a.nervous) canvas.put(a.x + 1, a.y - 1, U'!', Tint::Red, /*bold=*/true);
     }
 
     // --- Хвост очереди, не влезший на сцену -----------------------------------

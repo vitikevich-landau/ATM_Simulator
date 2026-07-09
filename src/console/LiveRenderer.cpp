@@ -388,11 +388,16 @@ void LiveRenderer::renderLoop() {
             if (presenter_) {
                 const AtmSnapshot snap = engine_.snapshot();
                 const std::vector<ClientSnapshot> queue = engine_.queueSnapshot();
+                // Хвост ленты операций — для судьбы исчезнувших клиентов
+                // (OK -> доволен, FAIL -> растерян, записи нет -> не дождался).
+                OperationFilter fateFilter;
+                fateFilter.last = 12;
+                const std::vector<OperationRecord> opsTail = engine_.operations(fateFilter);
                 const double nowSec =
                     std::chrono::duration<double>(
                         std::chrono::steady_clock::now().time_since_epoch())
                         .count();
-                presenter_->tick(snap, queue, nowSec);
+                presenter_->tick(snap, queue, nowSec, opsTail);
             }
             paintFrame();
         }

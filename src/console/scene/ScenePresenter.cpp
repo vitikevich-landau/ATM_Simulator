@@ -3,6 +3,8 @@
 #include <algorithm>
 #include <cmath>
 
+#include "atmsim/console/scene/ActorAnim.hpp"
+
 namespace atmsim::scene {
 namespace {
 
@@ -24,8 +26,26 @@ constexpr int kMaxLeavers = 4;
 // Порог «уже на месте», клеток.
 constexpr double kArriveEps = 0.5;
 
+// Грейс-период судьбы: столько тиков исчезнувший актёр ждёт свою запись в
+// ленте операций (запись могла ещё не попасть в хвост к моменту снимка).
+constexpr int kFateGraceTicks = 2;
+
+// Доля оставшегося терпения, ниже которой клиент «нервничает» (переступает
+// с ноги на ногу и получает бейдж «!»). Порог тот же, что красит полосу
+// терпения в таблице красным.
+constexpr double kNervousFrac = 0.15;
+
 // Плавный ход easeInOut: разгон в начале, торможение у цели.
 double smoothstep(double u) { return u * u * (3.0 - 2.0 * u); }
+
+// Судьба клиента по хвосту ленты операций: последняя запись о нём.
+enum class Fate { Unknown, Success, Fail };
+Fate lookupFate(const std::vector<OperationRecord>& opsTail, ClientId id) {
+    for (auto it = opsTail.rbegin(); it != opsTail.rend(); ++it) {
+        if (it->clientId == id) return it->success ? Fate::Success : Fate::Fail;
+    }
+    return Fate::Unknown;
+}
 
 }  // namespace
 
@@ -65,8 +85,18 @@ void ScenePresenter::retarget(Actor& a, double targetX, double now) const {
     a.tween = {cur, targetX, now, dist / speed};
 }
 
+void ScenePresenter::beginLeave(Actor& a, ActorState mood, double now) const {
+    a.state = mood;
+    a.y = exitLaneY_;
+    a.stateSince = now;
+    const double cur = posAt(a.tween, now);
+    const double exitX = static_cast<double>(width_) + 2.0;
+    const double dur = std::min((exitX - cur) / (kWalkSpeed * kLeaveSpeedFactor), kLeaveMaxSec);
+    a.tween = {cur, exitX, now, dur};
+}
+
 void ScenePresenter::tick(const AtmSnapshot& atm, const std::vector<ClientSnapshot>& queue,
-                          double nowSec) {
+                          double nowSec, const std::vector<OperationRecord>& opsTail) {
     // --- 1. Целевые позиции по снимку (снимок авторитетен) -------------------
     struct Target {
         double x = 0.0;
@@ -92,7 +122,8 @@ void ScenePresenter::tick(const AtmSnapshot& atm, const std::vector<ClientSnapsh
         Actor& a = it->second;
 
         // Уже уходящие: доигрываем твин; дошёл до края — прощаемся.
-        if (a.state == ActorState::LeaveHappy || a.state == ActorState::LeaveAngry) {
+        if (a.state == ActorState::LeaveHappy || a.state == ActorState::LeaveAngry ||
+            a.state == ActorState::LeavePuzzled) {
             if (nowSec >= a.tween.start + a.tween.dur) {
                 it = actors_.erase(it);
             } else {
@@ -101,24 +132,41 @@ void ScenePresenter::tick(const AtmSnapshot& atm, const std::vector<ClientSnapsh
             continue;
         }
 
+        // Ожидающие судьбу: запись об операции могла ещё не попасть в ленту к
+        // моменту снимка — даём ей kFateGraceTicks тиков. Успех -> доволен,
+        // отказ -> растерян, записи так и нет -> обслуженный всё равно уходит
+        // довольным (§4.5: операцию не бросают), ожидавший — не дождался.
+        if (a.state == ActorState::LeavePending) {
+            const Fate fate = lookupFate(opsTail, a.id);
+            if (fate == Fate::Success) {
+                beginLeave(a, ActorState::LeaveHappy, nowSec);
+            } else if (fate == Fate::Fail) {
+                beginLeave(a, ActorState::LeavePuzzled, nowSec);
+            } else if (--a.graceTicks <= 0) {
+                beginLeave(a, a.serving ? ActorState::LeaveHappy : ActorState::LeaveAngry,
+                           nowSec);
+            }
+            ++it;
+            continue;
+        }
+
         const auto found = targets.find(a.id);
         if (found == targets.end()) {
-            // Исчез из снимка. Кто был на обслуживании — обслужен и доволен
-            // (§4.5: начатую операцию не бросают); кто стоял в очереди — не
-            // дождался. (Этап 4 уточнит судьбу по ленте операций.)
+            // Исчез из снимка: замираем на месте и ждём судьбу из ленты.
             if (teleportNext_) {
                 // В телепорт-режиме (старт/после overlay) уходы не проигрываем.
                 it = actors_.erase(it);
                 continue;
             }
-            a.state = a.serving ? ActorState::LeaveHappy : ActorState::LeaveAngry;
-            a.y = exitLaneY_;
-            a.stateSince = nowSec;
             const double cur = posAt(a.tween, nowSec);
-            const double exitX = static_cast<double>(width_) + 2.0;
-            const double dur =
-                std::min((exitX - cur) / (kWalkSpeed * kLeaveSpeedFactor), kLeaveMaxSec);
-            a.tween = {cur, exitX, nowSec, dur};
+            a.state = ActorState::LeavePending;
+            a.graceTicks = kFateGraceTicks;
+            a.stateSince = nowSec;
+            a.tween = {cur, cur, nowSec, 0.0};
+            // Судьба может быть уже известна — не ждём тик впустую.
+            const Fate fate = lookupFate(opsTail, a.id);
+            if (fate == Fate::Success) beginLeave(a, ActorState::LeaveHappy, nowSec);
+            else if (fate == Fate::Fail) beginLeave(a, ActorState::LeavePuzzled, nowSec);
             ++it;
             continue;
         }
@@ -169,7 +217,10 @@ void ScenePresenter::tick(const AtmSnapshot& atm, const std::vector<ClientSnapsh
         auto oldest = actors_.end();
         for (auto it = actors_.begin(); it != actors_.end(); ++it) {
             const ActorState s = it->second.state;
-            if (s != ActorState::LeaveHappy && s != ActorState::LeaveAngry) continue;
+            if (s != ActorState::LeaveHappy && s != ActorState::LeaveAngry &&
+                s != ActorState::LeavePuzzled && s != ActorState::LeavePending) {
+                continue;
+            }
             ++leavers;
             if (oldest == actors_.end() || it->second.stateSince < oldest->second.stateSince) {
                 oldest = it;
@@ -194,43 +245,75 @@ void ScenePresenter::rebuildView(const AtmSnapshot& atm, const std::vector<Clien
     view_.hiddenQueueCount = queue.size() - static_cast<std::size_t>(shown);
     view_.overflowLabelX = layout::slotX(shown);
 
+    // Кому пора нервничать: доля оставшегося терпения ниже порога (тот же
+    // критерий, что красит полосу терпения в таблице красным).
+    std::map<ClientId, bool> nervous;
+    for (const ClientSnapshot& c : queue) {
+        const double total = c.waitedSeconds + c.remainingPatience;
+        nervous[c.id] = total > 0.0 && (c.remainingPatience / total) < kNervousFrac;
+    }
+
     for (const auto& [id, a] : actors_) {
         SceneActorView av;
         const double x = posAt(a.tween, now);
         av.x = static_cast<int>(std::lround(x));
         av.y = a.y;
+        av.label = "#" + std::to_string(id);
+        av.tint = Tint::Default;
+        av.labelTint = Tint::Grey;
         const bool moving = now < a.tween.start + a.tween.dur;
-        // Поза: у банкомата — рука к нему; в движении — шаг. Кадр ног
-        // чередуется по ПОЗИЦИИ, а не по времени: скорость перебирания ног
-        // всегда совпадает со скоростью перемещения (включая catch-up).
-        if (a.state == ActorState::AtAtm) {
-            av.pose = ActorPose::ReachLeft;
-        } else if (moving) {
-            av.pose = (static_cast<long long>(std::floor(x)) % 2 == 0) ? ActorPose::WalkA
-                                                                       : ActorPose::WalkB;
-        } else {
-            av.pose = ActorPose::Stand;
-        }
+        // Кадр ног в движении чередуется по ПОЗИЦИИ, а не по времени: скорость
+        // перебирания ног всегда совпадает со скоростью перемещения.
+        const ActorPose walkFrame = (static_cast<long long>(std::floor(x)) % 2 == 0)
+                                        ? ActorPose::WalkA
+                                        : ActorPose::WalkB;
         switch (a.state) {
             case ActorState::AtAtm:
+                // Акт по этапу обслуживания: «ручные» этапы — рука ходит к
+                // панели, «машинные» — клиент ждёт и переминается.
+                av.pose = moving ? walkFrame : pickActPose(id, view_.stage, now);
                 av.tint = Tint::Cyan;
                 av.bold = true;
                 av.labelTint = Tint::Cyan;
                 break;
+            case ActorState::LeavePending:
+                // Замер на месте в ожидании судьбы (доли секунды — незаметно).
+                av.pose = ActorPose::Stand;
+                break;
             case ActorState::LeaveHappy:
+                // Уходит вприпрыжку: каждый третий «шаг» — руки вверх.
+                av.pose = ((static_cast<long long>(std::floor(x)) / 3) % 3 == 0)
+                              ? ActorPose::Cheer
+                              : walkFrame;
                 av.tint = Tint::Green;
                 av.labelTint = Tint::Green;
                 break;
+            case ActorState::LeavePuzzled:
+                av.pose = moving ? walkFrame : ActorPose::Stand;
+                av.tint = Tint::Yellow;
+                av.labelTint = Tint::Yellow;
+                av.label += "?";  // «что это было?»
+                break;
             case ActorState::LeaveAngry:
+                av.pose = moving ? walkFrame : ActorPose::Stand;
                 av.tint = Tint::Red;
                 av.labelTint = Tint::Red;
                 break;
-            default:
-                av.tint = Tint::Default;
-                av.labelTint = Tint::Grey;
+            case ActorState::WalkIn:
+            case ActorState::Advance:
+            case ActorState::QueueIdle:
+                if (moving) {
+                    av.pose = walkFrame;
+                } else if (nervous.count(id) != 0 && nervous[id]) {
+                    av.pose = pickNervousPose(id, now);
+                } else {
+                    // Живая очередь: переминания и редкие взмахи, у каждого
+                    // своя фаза (хэш от id, без RNG).
+                    av.pose = pickIdlePose(id, now);
+                }
+                av.nervous = nervous.count(id) != 0 && nervous[id];
                 break;
         }
-        av.label = "#" + std::to_string(id);
         view_.actors.push_back(std::move(av));
     }
 }
