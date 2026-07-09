@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <chrono>
+#include <cmath>  // std::lround
 #include <ctime>
 #include <fstream>
 #include <iomanip>
@@ -69,6 +70,17 @@ void AdminConsole::printStatus() const {
     if (s.currentClientId) {
         std::cout << "Текущий клиент:   #" << *s.currentClientId
                   << " (" << to_string(*s.currentOperation) << ")\n";
+        // Тематический этап обслуживания (§4.8): что именно сейчас происходит
+        // у банкомата и сколько обслуживания уже отработано. Процент — через
+        // lround, как на дашборде (LiveRenderer), чтобы два представления
+        // одного прогресса не расходились на 1%. Секунды — модельные, как и
+        // все времена наружу (§4.7): отработано = доля * полная длительность.
+        if (s.currentStage) {
+            std::cout << "Сейчас:           " << to_string(*s.currentStage)
+                      << " (" << std::lround(s.serviceProgress * 100.0) << "%, "
+                      << static_cast<long>(s.serviceProgress * s.servicePlannedModelSec)
+                      << " c из " << static_cast<long>(s.servicePlannedModelSec) << " c)\n";
+        }
     } else {
         std::cout << "Текущий клиент:   —\n";
     }

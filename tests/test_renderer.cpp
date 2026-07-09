@@ -143,6 +143,50 @@ TEST(renderer_shows_deferred_maintenance) {
     arr.join();
 }
 
+// Пока клиент обслуживается, дашборд показывает тематический этап («что делает
+// клиент», §4.8) и процент прогресса. Сразу после старта обслуживания этап —
+// всегда первый в сценарии: «вставляет карту» (общий для всех операций).
+// Заодно закрепляем §4.8.5 для НОВОЙ строки: слот этапа один и тот же и в
+// пустом (простой), и в заполненном (обслуживание) состоянии — высота кадра
+// не меняется. events_tail = 0, чтобы высоту кадра определяла именно левая
+// колонка (при длинной ленте сравнение высот было бы вакуумным).
+TEST(renderer_shows_service_stage_while_serving) {
+    Config cfg;
+    cfg.clients.count = 1;
+    cfg.clients.arrivalRatePerMinute = 1000.0;              // клиент приходит сразу
+    cfg.clients.patienceSeconds = SecondsRange{1000000, 1000000};
+    cfg.serviceTime.distribution = ServiceDistribution::Uniform;
+    cfg.serviceTime.minSeconds = 60.0;   // долгое обслуживание: успеем снять кадр
+    cfg.serviceTime.maxSeconds = 60.0;
+    cfg.ui.color = false;
+    cfg.ui.eventsTail = 0;
+    AtmEngine engine(cfg);
+    LiveRenderer r(engine, cfg);
+
+    const int idleHeight = static_cast<int>(r.composeLines().size());  // никого нет
+
+    std::thread eng([&] { engine.run(); });
+    std::thread arr([&] { engine.generateArrivals(); });
+
+    const auto deadline = std::chrono::steady_clock::now() + 3s;
+    while (std::chrono::steady_clock::now() < deadline &&
+           !engine.snapshot().currentClientId.has_value()) {
+        std::this_thread::sleep_for(1ms);
+    }
+    CHECK(engine.snapshot().currentClientId.has_value());
+
+    const std::vector<std::string> lines = r.composeLines();
+    std::string all;
+    for (const auto& l : lines) all += l + '\n';
+    CHECK(all.find("вставляет карту") != std::string::npos);
+    CHECK(all.find('%') != std::string::npos);
+    CHECK_EQ(static_cast<int>(lines.size()), idleHeight);  // §4.8.5: высота та же
+
+    engine.requestStop();
+    eng.join();
+    arr.join();
+}
+
 // Кламп смещения прокрутки очереди: [0, max(0, total - viewRows)]. Ключевая
 // «чистая» логика интерактивного просмотра очереди (листание стрелками).
 TEST(terminal_clamp_scroll_offset) {

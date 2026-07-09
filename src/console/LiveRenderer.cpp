@@ -185,6 +185,22 @@ std::vector<std::string> LiveRenderer::composeLines() const {
         }
         left.push_back(os.str());
     }
+    // Строка «что делает клиент» (§4.8): тематический этап обслуживания и доля
+    // отработанного времени. Пока никого не обслуживают, строка пуста — она
+    // ВСЕГДА занимает ровно один слот, чтобы высота кадра не плавала (§4.8.5).
+    {
+        std::ostringstream os;
+        if (s.currentClientId && s.currentStage) {
+            os << " └ " << C(ansi::cyan()) << to_string(*s.currentStage) << R() << ' ';
+            // Полоса прогресса обслуживания — как и остальные полосы, только
+            // при ui.show_progress_bars; процент показываем всегда.
+            if (cfg_.ui.showProgressBars) {
+                os << '[' << C(ansi::cyan()) << bar(s.serviceProgress, 10) << R() << "] ";
+            }
+            os << static_cast<int>(std::lround(s.serviceProgress * 100.0)) << '%';
+        }
+        left.push_back(os.str());
+    }
     left.push_back("");
     {
         std::ostringstream os;
