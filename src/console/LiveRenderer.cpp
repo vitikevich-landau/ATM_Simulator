@@ -8,6 +8,8 @@
 #include <sstream>
 
 #include "atmsim/console/Terminal.hpp"
+#include "atmsim/console/scene/SceneCanvas.hpp"
+#include "atmsim/console/scene/SceneComposer.hpp"
 #include "atmsim/core/Money.hpp"
 
 namespace atmsim {
@@ -79,11 +81,25 @@ std::string fit(const std::string& s, int width) {
 
 }  // namespace
 
-LiveRenderer::LiveRenderer(AtmEngine& engine, const Config& cfg)
+LiveRenderer::LiveRenderer(AtmEngine& engine, const Config& cfg, int forcedWidth,
+                           int forcedHeight)
     : engine_(engine), cfg_(cfg) {
     // Размеры терминала — один раз при создании (ресайз на лету — v2).
-    width_ = std::clamp(Terminal::width(), 60, 200);
-    termHeight_ = std::clamp(Terminal::height(), 16, 60);
+    // Принудительные размеры (>0) — только для тестов, см. LiveRenderer.hpp.
+    width_ = std::clamp(forcedWidth > 0 ? forcedWidth : Terminal::width(), 60, 200);
+    termHeight_ = std::clamp(forcedHeight > 0 ? forcedHeight : Terminal::height(), 16, 60);
+
+    // Сцена включается, только если она СО ВСЕЙ таблицей помещается в терминал.
+    // Бюджет тела (колонки очереди/статистики) в scene-режиме: высота терминала
+    // минус шапка (2), три разделителя (3), подвал (1), строка ввода с запасом
+    // (2) и сама сцена. Минимум 12 строк тела = очередь 4+5 служебных ИЛИ
+    // лента 3+9 служебных — меньше таблица теряет смысл. Не влезло — молча
+    // остаёмся в таблице: высота кадра постоянна в обоих случаях (§4.8.5).
+    sceneRows_ = std::clamp(cfg_.ui.sceneRows, scene::layout::kMinSceneRows,
+                            scene::layout::kMaxSceneRows);
+    const int bodyBudget = termHeight_ - 8 - sceneRows_;
+    sceneActive_ = cfg_.ui.scene && width_ >= 84 && bodyBudget >= 12;
+
     height_ = static_cast<int>(composeLines().size());
 }
 
@@ -106,7 +122,12 @@ std::vector<std::string> LiveRenderer::composeLines() const {
     // Длина ленты последних операций — из конфига (ui.events_tail), с разумным
     // потолком, чтобы битый конфиг не растянул кадр до абсурда. Значение постоянно
     // в пределах запуска, поэтому высота кадра остаётся стабильной (§4.8.5).
-    const int feedRows = std::clamp(cfg_.ui.eventsTail, 0, 50);
+    // В scene-режиме лента дополнительно ужимается под остаток высоты после
+    // сценической полосы (9 = строки статистики над лентой), но не короче 3.
+    const int sceneBodyBudget = termHeight_ - 8 - sceneRows_;
+    const int feedRows = sceneActive_
+        ? std::clamp(std::min(cfg_.ui.eventsTail, sceneBodyBudget - 9), 3, 50)
+        : std::clamp(cfg_.ui.eventsTail, 0, 50);
     OperationFilter feedFilter;
     feedFilter.last = static_cast<std::size_t>(feedRows);
     const std::vector<OperationRecord> ops = engine_.operations(feedFilter);
@@ -116,7 +137,11 @@ std::vector<std::string> LiveRenderer::composeLines() const {
     // Геометрия: левая колонка (очередь) шире, правая — статистика/лента.
     const int leftW = std::clamp(width_ - 42, 40, 54);
     const int rightW = width_ - leftW - 3;              // 3 = " │ "
-    const int queueVisible = std::max(4, termHeight_ - 13);
+    // Число слотов очереди: без сцены — вся высота терминала минус служебные
+    // строки; со сценой — остаток бюджета тела (5 = строки левой колонки
+    // над слотами и под ними). Оба значения постоянны в пределах сессии.
+    const int queueVisible = sceneActive_ ? std::clamp(sceneBodyBudget - 5, 4, 99)
+                                          : std::max(4, termHeight_ - 13);
 
     // Цвет маркера состояния.
     const char* sc = ansi::grey();
@@ -166,6 +191,17 @@ std::vector<std::string> LiveRenderer::composeLines() const {
         os << C(cashColor) << formatMoney(s.cashboxBalance) << R() << ' ' << cur
            << (s.lowCash ? std::string(" ") + C(ansi::red()) + "НИЗКАЯ" + R() : std::string{});
         L.push_back(fit(os.str(), width_));
+    }
+
+    // === Сценическая полоса (feature/scene): банкомат и человечки ===
+    // Полоса живёт МЕЖДУ шапкой и таблицей: сцена показывает «как это выглядит»,
+    // таблица ниже — точные цифры (решение владельца: цифры не жертвуем).
+    // Высота полосы постоянна (sceneRows_), поэтому §4.8.5 не нарушается.
+    if (sceneActive_) {
+        L.push_back(C(ansi::grey()) + repeatUtf8("─", width_) + R());
+        scene::SceneCanvas canvas(width_, sceneRows_);
+        scene::composeScene(scene::buildSceneView(s, q, width_), canvas);
+        for (std::string& line : canvas.toLines(color)) L.push_back(std::move(line));
     }
 
     // === Разделитель с «шапкой» колонок (┬) ===

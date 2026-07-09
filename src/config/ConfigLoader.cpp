@@ -106,6 +106,15 @@ void validate(const Config& c) {
     if (c.ui.refreshHz < 1 || c.ui.refreshHz > 60) {
         throw ConfigError("ui.refresh_hz должен быть в диапазоне 1..60");
     }
+    // Границы сцены. fps: ниже 5 анимация разваливается на слайды, выше 30 —
+    // бессмысленная нагрузка (см. docs/scene_frame_budget.md). rows: ниже 10
+    // не влезает корпус банкомата с подписями, выше 14 сцена съедает таблицу.
+    if (c.ui.sceneFps < 5 || c.ui.sceneFps > 30) {
+        throw ConfigError("ui.scene_fps должен быть в диапазоне 5..30");
+    }
+    if (c.ui.sceneRows < 10 || c.ui.sceneRows > 14) {
+        throw ConfigError("ui.scene_rows должен быть в диапазоне 10..14");
+    }
     if (c.simulation.timeScale <= 0.0) {
         throw ConfigError("time_scale должен быть больше нуля");
     }
@@ -210,6 +219,9 @@ Config ConfigLoader::loadFromString(const std::string& jsonText) {
             c.ui.eventsTail = u.value("events_tail", c.ui.eventsTail);
             c.ui.showProgressBars = u.value("show_progress_bars", c.ui.showProgressBars);
             c.ui.color = u.value("color", c.ui.color);
+            c.ui.scene = u.value("scene", c.ui.scene);
+            c.ui.sceneFps = u.value("scene_fps", c.ui.sceneFps);
+            c.ui.sceneRows = u.value("scene_rows", c.ui.sceneRows);
         }
 
         if (j.contains("logging")) {

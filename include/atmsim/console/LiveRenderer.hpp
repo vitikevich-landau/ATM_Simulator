@@ -31,7 +31,12 @@ namespace atmsim {
 ///        ядра не мутирует (§4.8).
 class LiveRenderer {
 public:
-    LiveRenderer(AtmEngine& engine, const Config& cfg);
+    // forcedWidth/forcedHeight > 0 подменяют реальные размеры терминала.
+    // Нужны ТОЛЬКО тестам: вне TTY (Docker, CI) Terminal::width()/height()
+    // возвращают запасные 80x24, и сцена (требующая ~84x30) была бы
+    // непроверяемой. Обычный код передаёт нули (= автоопределение).
+    LiveRenderer(AtmEngine& engine, const Config& cfg, int forcedWidth = 0,
+                 int forcedHeight = 0);
     // Деструктор определён inline (в заголовке) намеренно: так он получает
     // COMDAT-компоновку и линкер сам сливает копии из разных единиц трансляции.
     // Внешнее (out-of-line) определение спец-члена в статической библиотеке на
@@ -93,6 +98,14 @@ private:
     int width_{80};
     int termHeight_{24};
     int height_{0};                    // высота дашборда (число строк)
+
+    // --- Анимированная сцена (feature/scene) ---------------------------------
+    // Решение «влезает ли сцена» принимается ОДИН раз в конструкторе (как и
+    // размеры): при ui.scene=true, но маленьком терминале sceneActive_ остаётся
+    // false и дашборд молча работает в табличном режиме — высота кадра в
+    // пределах live-сессии постоянна в любом случае (§4.8.5).
+    bool sceneActive_{false};
+    int sceneRows_{0};                 // высота сценической полосы (строки)
 };
 
 }  // namespace atmsim

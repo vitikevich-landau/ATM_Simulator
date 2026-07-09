@@ -20,6 +20,7 @@ echo "== compile with -fsanitize=thread =="
 g++ $FLAGS $CORE src/reporting/Logger.cpp src/engine/ServiceTimeProvider.cpp src/engine/ServiceStages.cpp src/engine/AtmEngine.cpp \
     src/console/Terminal.cpp src/console/LiveRenderer.cpp \
     src/console/scene/GlyphSet.cpp src/console/scene/SceneCanvas.cpp \
+    src/console/scene/SceneSprites.cpp src/console/scene/SceneComposer.cpp \
     tests/test_main.cpp tests/test_engine.cpp tests/test_renderer.cpp tests/test_service_stages.cpp -o build/atmsim_tests_tsan
 
 # ThreadSanitizer в контейнере спотыкается об ASLR ("unexpected memory mapping").
