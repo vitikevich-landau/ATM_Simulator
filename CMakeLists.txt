@@ -93,6 +93,7 @@ target_link_libraries(atmsim_reporting PUBLIC atmsim_flags)
 # --- Движок симуляции (M2 однопоточный + M3 многопоточный AtmEngine) ----------
 add_library(atmsim_engine
     src/engine/ServiceTimeProvider.cpp
+    src/engine/ServiceStages.cpp
     src/engine/ClientFactory.cpp
     src/engine/SimulationRunner.cpp
     src/engine/AtmEngine.cpp)
@@ -125,6 +126,7 @@ if(ATMSIM_BUILD_TESTS)
         tests/test_operation.cpp
         tests/test_config.cpp
         tests/test_service_time.cpp
+        tests/test_service_stages.cpp
         tests/test_simulation.cpp
         tests/test_engine.cpp
         tests/test_parser.cpp

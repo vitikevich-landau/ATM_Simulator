@@ -14,6 +14,7 @@
 
 #include "atmsim/core/Operation.hpp"  // OperationRecord
 #include "atmsim/core/Types.hpp"
+#include "atmsim/engine/ServiceStages.hpp"  // ServiceStage
 
 namespace atmsim {
 
@@ -23,6 +24,15 @@ struct AtmSnapshot {
     Money cashboxBalance{0};
     std::optional<ClientId> currentClientId;          // кого обслуживают сейчас
     std::optional<OperationType> currentOperation;    // и какую операцию
+    // «Что происходит у банкомата» прямо сейчас (§4.8): тематический этап
+    // обслуживания (вставляет карту / вводит PIN / отсчёт купюр / ...) и доля
+    // уже отработанного времени обслуживания (0..1). Этап выводится из
+    // прогресса чистой функцией serviceStageAt() — см. ServiceStages.hpp.
+    // Заполнены только пока клиент на обслуживании (иначе nullopt / нули);
+    // на паузе прогресс замирает вместе с таймером службы (§4.6).
+    std::optional<ServiceStage> currentStage;
+    double serviceProgress{0.0};                      // отработанная доля, 0..1
+    double servicePlannedModelSec{0.0};               // полная длительность (модельные сек.)
     std::uint64_t totalServed{0};
     std::uint64_t totalLeft{0};                       // ушли по терпению
     std::size_t queueLength{0};

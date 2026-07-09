@@ -19,10 +19,10 @@ FLAGS="-std=c++20 -O2 -Wall -Wextra -Wpedantic -pthread -Iinclude -isystem third
 CORE="src/core/Money.cpp src/core/Types.cpp src/core/Account.cpp src/core/Cashbox.cpp src/core/Operation.cpp"
 CONFIG="src/config/ConfigLoader.cpp"
 REPORTING="src/reporting/Logger.cpp"
-ENGINE="src/engine/ServiceTimeProvider.cpp src/engine/ClientFactory.cpp src/engine/SimulationRunner.cpp src/engine/AtmEngine.cpp"
+ENGINE="src/engine/ServiceTimeProvider.cpp src/engine/ServiceStages.cpp src/engine/ClientFactory.cpp src/engine/SimulationRunner.cpp src/engine/AtmEngine.cpp"
 CONSOLE="src/console/CommandParser.cpp src/console/Terminal.cpp src/console/LiveRenderer.cpp src/console/Signals.cpp src/console/AdminConsole.cpp"
 TEST_CONSOLE="src/console/CommandParser.cpp src/console/Terminal.cpp src/console/LiveRenderer.cpp"
-TESTS="tests/test_main.cpp tests/test_money.cpp tests/test_account.cpp tests/test_cashbox.cpp tests/test_operation.cpp tests/test_config.cpp tests/test_service_time.cpp tests/test_simulation.cpp tests/test_engine.cpp tests/test_parser.cpp tests/test_renderer.cpp tests/test_logger.cpp"
+TESTS="tests/test_main.cpp tests/test_money.cpp tests/test_account.cpp tests/test_cashbox.cpp tests/test_operation.cpp tests/test_config.cpp tests/test_service_time.cpp tests/test_service_stages.cpp tests/test_simulation.cpp tests/test_engine.cpp tests/test_parser.cpp tests/test_renderer.cpp tests/test_logger.cpp"
 
 echo "== build unit tests =="
 g++ $FLAGS -Itests $CORE $CONFIG $REPORTING $ENGINE $TEST_CONSOLE $TESTS -o build/atmsim_tests
