@@ -18,7 +18,7 @@ FLAGS="-std=c++20 -g -O1 -fsanitize=thread -pthread -Iinclude -Itests"
 
 echo "== compile with -fsanitize=thread =="
 g++ $FLAGS $CORE src/reporting/Logger.cpp src/engine/ServiceTimeProvider.cpp src/engine/ServiceStages.cpp src/engine/AtmEngine.cpp \
-    src/console/Terminal.cpp src/console/LiveRenderer.cpp \
+    src/console/Terminal.cpp src/console/FrameDiffer.cpp src/console/LiveRenderer.cpp \
     src/console/scene/GlyphSet.cpp src/console/scene/SceneCanvas.cpp \
     src/console/scene/SceneSprites.cpp src/console/scene/SceneComposer.cpp \
     src/console/scene/ScenePresenter.cpp src/console/scene/ActorAnim.cpp \

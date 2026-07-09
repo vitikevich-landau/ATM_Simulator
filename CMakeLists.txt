@@ -107,6 +107,7 @@ target_link_libraries(atmsim_engine PUBLIC atmsim_config atmsim_reporting)
 add_library(atmsim_console
     src/console/CommandParser.cpp
     src/console/Terminal.cpp
+    src/console/FrameDiffer.cpp
     src/console/LiveRenderer.cpp
     src/console/Signals.cpp
     src/console/AdminConsole.cpp
@@ -117,6 +118,12 @@ add_library(atmsim_console
     src/console/scene/ScenePresenter.cpp
     src/console/scene/ActorAnim.cpp)
 target_link_libraries(atmsim_console PUBLIC atmsim_engine)
+if(WIN32)
+    # timeBeginPeriod/timeEndPeriod (TimerResolutionGuard в Terminal.cpp).
+    # Для MSVC зависимость продублирована pragma comment(lib) в исходнике,
+    # но MinGW/clang прагму игнорируют — линкуем явно.
+    target_link_libraries(atmsim_console PUBLIC winmm)
+endif()
 
 # --- Исполняемый файл --------------------------------------------------------
 add_executable(atm_sim
@@ -157,6 +164,7 @@ if(ATMSIM_BUILD_TESTS)
         tests/test_scene_canvas.cpp
         tests/test_scene_compose.cpp
         tests/test_scene_presenter.cpp
+        tests/test_frame_differ.cpp
         tests/test_logger.cpp)
     target_include_directories(atmsim_tests PRIVATE tests)
     target_link_libraries(atmsim_tests PRIVATE atmsim_console)

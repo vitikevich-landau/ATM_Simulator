@@ -26,6 +26,23 @@ public:
     static int height();  // высота терминала в строках (fallback 24)
 };
 
+// RAII-повышение разрешения системного таймера Windows до 1 мс на время жизни
+// объекта (timeBeginPeriod/timeEndPeriod из winmm). Зачем: штатная
+// гранулярность ~15.6 мс заставляет wait_until кадрового цикла промахиваться
+// мимо дедлайнов на высоких fps (см. docs/scene_frame_budget.md, режим hires).
+// Заводится ТОЛЬКО в render-потоке на время live-режима — глобально настройку
+// системы не трогаем. На POSIX — no-op (там таймеры и так точные).
+class TimerResolutionGuard {
+public:
+    TimerResolutionGuard();
+    ~TimerResolutionGuard();
+    TimerResolutionGuard(const TimerResolutionGuard&) = delete;
+    TimerResolutionGuard& operator=(const TimerResolutionGuard&) = delete;
+
+private:
+    bool active_ = false;
+};
+
 // --- Интерактивный ввод (raw-режим) — §4.8 v2: горячие клавиши / прокрутка ------
 // Распознаваемые клавиши. Char — обычный печатный символ (возвращается отдельно),
 // None — нераспознанная управляющая, Eof — ввод закрыт.
@@ -99,6 +116,11 @@ inline const char* hideCursor()    { return "\033[?25l"; }
 inline const char* showCursor()    { return "\033[?25h"; }
 inline const char* altScreenOn()   { return "\033[?1049h"; }  // альтернативный буфер
 inline const char* altScreenOff()  { return "\033[?1049l"; }
+// Synchronized output (DEC 2026): терминал показывает кадр целиком, без
+// «полусобранных» промежуточных состояний. Windows Terminal поддерживает,
+// legacy conhost молча игнорирует — слать можно безусловно.
+inline const char* syncBegin()     { return "\033[?2026h"; }
+inline const char* syncEnd()       { return "\033[?2026l"; }
 
 inline std::string moveTo(int row, int col) {
     return "\033[" + std::to_string(row) + ';' + std::to_string(col) + 'H';

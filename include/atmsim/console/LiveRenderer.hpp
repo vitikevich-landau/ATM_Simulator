@@ -23,6 +23,7 @@
 #include <vector>
 
 #include "atmsim/config/Config.hpp"
+#include "atmsim/console/FrameDiffer.hpp"
 // Полный тип нужен здесь (а не forward-декларация), потому что деструктор
 // LiveRenderer определён inline в этом заголовке (обход LNK2005 на MSVC), а
 // inline-деструктор разрушает unique_ptr<ScenePresenter> — тип обязан быть
@@ -56,7 +57,10 @@ public:
     void start();   // запустить render-поток
     void stop();    // остановить и присоединить (идемпотентно)
     void pause();   // приостановить перерисовку (для полноэкранных ответов)
-    void resume();  // возобновить перерисовку
+    // Возобновить перерисовку. Рендер сам (в своём потоке) сделает полный
+    // repaint (overlay затёр экран) и расставит актёров сцены по текущему
+    // снимку мгновенно — «догоняющие» анимации за время паузы не проигрываются.
+    void resume();
 
     // Куда рендер-поток ставит видимый курсор в конце каждого кадра — текущая
     // позиция ввода команды (row/col, 1-based). Сообщает консоль при каждой
@@ -70,13 +74,20 @@ public:
     // чтобы кадр и эхо/ответы не перемешивались.
     std::mutex& outputMutex() { return outMutex_; }
 
-    // Собирает кадр как список строк (с ANSI-цветом, если включён). Публичный,
-    // чтобы можно было проверить содержимое кадра юнит-тестом без терминала.
+    // Собирает кадр как список строк (с ANSI-цветом, если включён), снимая
+    // СВЕЖИЕ снимки движка. Публичный, чтобы можно было проверить содержимое
+    // кадра юнит-тестом без терминала.
     std::vector<std::string> composeLines() const;
 
 private:
     void renderLoop();
-    void paintFrame();
+    // Сборка кадра из ГОТОВЫХ снимков — рабочая лошадка composeLines() и
+    // render-цикла (тот держит снимки в кэше и опрашивает движок на
+    // refresh_hz, а кадры рисует на scene_fps — частоты разделены).
+    std::vector<std::string> composeLinesFrom(const AtmSnapshot& s, const StatsSnapshot& st,
+                                              const std::vector<ClientSnapshot>& q,
+                                              const std::vector<OperationRecord>& ops) const;
+    void paintFrame(const std::vector<std::string>& lines);
 
     AtmEngine& engine_;
     Config cfg_;
@@ -118,6 +129,20 @@ private:
     // отрисовкой кадра; извне его дергают только тесты (без запущенного
     // потока). Движок он не трогает — работает с копиями-снимками.
     std::unique_ptr<scene::ScenePresenter> presenter_;
+
+    // --- Этап 5: дифф-рендер и кэш снимков ------------------------------------
+    // Всё ниже ПРИНАДЛЕЖИТ render-потоку (как presenter_): консоль общается с
+    // ним только атомарным флагом teleportOnResume_.
+    FrameDiffer differ_;               // перерисовываем только изменившиеся строки
+    AtmSnapshot cachedSnap_;           // снимки опрашиваются на refresh_hz...
+    StatsSnapshot cachedStats_;        // ...а кадры рисуются на scene_fps из кэша
+    std::vector<ClientSnapshot> cachedQueue_;
+    std::vector<OperationRecord> cachedOps_;
+
+    // resume() (консольный поток) просит render-поток: полный repaint (overlay
+    // затёр экран) + мгновенная расстановка актёров. Атомарный флаг вместо
+    // прямых вызовов differ_/presenter_ — они не потокобезопасны.
+    std::atomic<bool> teleportOnResume_{false};
 };
 
 }  // namespace atmsim
