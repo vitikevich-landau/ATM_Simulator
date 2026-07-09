@@ -38,6 +38,7 @@ endif()
 # --- Опции проекта -----------------------------------------------------------
 option(ATMSIM_WARNINGS_AS_ERRORS "Считать предупреждения ошибками" OFF)
 option(ATMSIM_BUILD_TESTS        "Собирать юнит-тесты"             ON)
+option(ATMSIM_BUILD_TOOLS        "Собирать вспомогательные инструменты (tools/)" OFF)
 
 # --- Общая интерфейсная цель с флагами ---------------------------------------
 # INTERFACE-библиотека не компилируется сама, а «раздаёт» свои свойства тем,
@@ -112,6 +113,19 @@ target_link_libraries(atmsim_console PUBLIC atmsim_engine)
 add_executable(atm_sim
     src/main.cpp)
 target_link_libraries(atm_sim PRIVATE atmsim_console)
+
+# --- Вспомогательные инструменты (не собираются по умолчанию) -----------------
+# term_bench — измеритель «бюджета кадра» терминала для фичи «сцена» (этап 0):
+# самодостаточный бинарь без зависимостей от библиотек проекта. Методика и
+# снятые цифры — в docs/scene_frame_budget.md.
+if(ATMSIM_BUILD_TOOLS)
+    add_executable(term_bench tools/term_bench.cpp)
+    target_link_libraries(term_bench PRIVATE atmsim_flags)
+    if(WIN32)
+        # timeBeginPeriod/timeEndPeriod (замер режима hires) живут в winmm.
+        target_link_libraries(term_bench PRIVATE winmm)
+    endif()
+endif()
 
 # --- Тесты -------------------------------------------------------------------
 # Пока используется минимальный собственный харнес (tests/simple_test.hpp) —
