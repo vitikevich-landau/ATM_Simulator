@@ -1,0 +1,676 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>ATM Simulator — как устроен код</title>
+<style>
+  :root{
+    --bg:#0e1116; --bg2:#151a21; --bg3:#1c232d; --panel:#131820; --border:#273140;
+    --fg:#d7dee8; --fg2:#9aa7b6; --fg3:#6b7888;
+    --accent:#4aa3ff; --green:#3ecf8e; --red:#ff5f6d; --yellow:#ffcf5c; --blue:#5b9dff;
+    --cyan:#38d6d6; --purple:#b58cff; --grey:#7f8c9b;
+    --mono:'Cascadia Code','JetBrains Mono',Consolas,'SF Mono',Menlo,monospace;
+    --sans:'Segoe UI',system-ui,-apple-system,Roboto,Arial,sans-serif;
+    --shadow:0 6px 24px rgba(0,0,0,.35);
+  }
+  :root[data-theme="light"]{
+    --bg:#f5f7fa; --bg2:#ffffff; --bg3:#eef2f7; --panel:#ffffff; --border:#d6deea;
+    --fg:#1b2430; --fg2:#4a5666; --fg3:#7a8798;
+    --shadow:0 6px 20px rgba(30,50,80,.10);
+  }
+  *{box-sizing:border-box}
+  html,body{margin:0;padding:0}
+  body{background:var(--bg);color:var(--fg);font-family:var(--sans);font-size:15px;line-height:1.55}
+  a{color:var(--accent);text-decoration:none}
+  code,.ref{font-family:var(--mono);font-size:.86em}
+  .ref{color:var(--cyan);background:rgba(56,214,214,.08);padding:1px 6px;border-radius:5px;white-space:nowrap;border:1px solid rgba(56,214,214,.16)}
+  .layout{display:flex;min-height:100vh}
+  /* Sidebar */
+  .side{width:250px;flex:0 0 250px;background:var(--bg2);border-right:1px solid var(--border);position:sticky;top:0;height:100vh;overflow-y:auto;padding:18px 0}
+  .brand{padding:0 20px 14px;border-bottom:1px solid var(--border);margin-bottom:10px}
+  .brand h1{font-size:16px;margin:0 0 3px;letter-spacing:.3px}
+  .brand p{margin:0;font-size:12px;color:var(--fg3)}
+  .nav a{display:flex;align-items:center;gap:10px;padding:9px 20px;color:var(--fg2);font-size:14px;cursor:pointer;border-left:3px solid transparent}
+  .nav a:hover{background:var(--bg3);color:var(--fg)}
+  .nav a.active{color:var(--fg);border-left-color:var(--accent);background:linear-gradient(90deg,rgba(74,163,255,.12),transparent)}
+  .nav .dot{width:8px;height:8px;border-radius:50%;flex:0 0 8px}
+  .theme{margin:14px 20px 0;padding-top:12px;border-top:1px solid var(--border)}
+  .theme button{width:100%;background:var(--bg3);color:var(--fg2);border:1px solid var(--border);border-radius:8px;padding:7px;cursor:pointer;font-size:13px}
+  .theme button:hover{color:var(--fg)}
+  /* Main */
+  .main{flex:1;min-width:0;padding:34px 44px 90px;max-width:1100px}
+  section{display:none;animation:fade .25s ease}
+  section.on{display:block}
+  @keyframes fade{from{opacity:0;transform:translateY(6px)}to{opacity:1;transform:none}}
+  h2.title{font-size:26px;margin:0 0 4px;letter-spacing:.2px}
+  .sub{color:var(--fg2);margin:0 0 26px;font-size:15px;max-width:75ch}
+  h3{font-size:18px;margin:30px 0 12px;padding-bottom:6px;border-bottom:1px solid var(--border)}
+  h4{font-size:15px;margin:20px 0 8px;color:var(--fg)}
+  p{max-width:78ch}
+  .lead{color:var(--fg2)}
+  .grid{display:grid;gap:14px}
+  .g2{grid-template-columns:1fr 1fr}
+  .g3{grid-template-columns:repeat(3,1fr)}
+  @media(max-width:900px){.g2,.g3{grid-template-columns:1fr}}
+  .card{background:var(--panel);border:1px solid var(--border);border-radius:12px;padding:16px 18px}
+  .card h4{margin-top:0}
+  .tag{display:inline-block;font-size:11px;font-weight:600;padding:2px 9px;border-radius:20px;letter-spacing:.4px;text-transform:uppercase}
+  .muted{color:var(--fg2)}
+  ul.tight{margin:8px 0;padding-left:20px}
+  ul.tight li{margin:5px 0}
+  .kbd{font-family:var(--mono);background:var(--bg3);border:1px solid var(--border);border-radius:5px;padding:1px 6px;font-size:.85em}
+  .pill{display:inline-block;padding:2px 10px;border-radius:20px;font-size:12px;font-weight:600;border:1px solid}
+  /* Diagram generic */
+  .diagram{background:var(--bg2);border:1px solid var(--border);border-radius:14px;padding:18px;overflow-x:auto;box-shadow:var(--shadow)}
+  .hint{font-size:13px;color:var(--fg3);margin:6px 2px 14px;display:flex;align-items:center;gap:7px}
+  .hint::before{content:"☞";color:var(--accent)}
+  svg{display:block;max-width:100%}
+  .node{cursor:pointer;transition:filter .15s}
+  .node:hover{filter:brightness(1.18)}
+  .node rect,.node circle,.node ellipse{transition:stroke-width .15s}
+  .node.sel rect,.node.sel circle,.node.sel ellipse{stroke-width:3.5}
+  .nlabel{font-family:var(--sans);font-weight:600;pointer-events:none}
+  .nsub{font-family:var(--mono);pointer-events:none}
+  text{fill:var(--fg)}
+  .detail{margin-top:16px;background:var(--panel);border:1px solid var(--border);border-left:4px solid var(--accent);border-radius:10px;padding:16px 18px;min-height:60px}
+  .detail .role{color:var(--fg2);margin:2px 0 12px}
+  .detail h4{margin:0}
+  .kv{font-size:13.5px}
+  .kv b{color:var(--fg3);font-weight:600;text-transform:uppercase;font-size:11px;letter-spacing:.5px;display:block;margin:12px 0 5px}
+  /* Stepper */
+  .stepper{display:flex;gap:14px;align-items:flex-start}
+  .steplist{flex:0 0 260px;max-height:520px;overflow-y:auto;border:1px solid var(--border);border-radius:10px;background:var(--bg2)}
+  .steplist button{display:block;width:100%;text-align:left;background:none;border:0;border-bottom:1px solid var(--border);color:var(--fg2);padding:10px 12px;cursor:pointer;font-size:13px;font-family:var(--sans)}
+  .steplist button:hover{background:var(--bg3);color:var(--fg)}
+  .steplist button.active{background:var(--bg3);color:var(--fg);border-left:3px solid var(--green)}
+  .steplist .n{color:var(--green);font-weight:700;margin-right:7px}
+  .stepbody{flex:1;background:var(--panel);border:1px solid var(--border);border-radius:10px;padding:20px 22px;min-height:200px}
+  .stepbody .big{font-size:40px;color:var(--green);font-weight:800;line-height:1}
+  .navbtns{margin-top:14px;display:flex;gap:10px}
+  .btn{background:var(--bg3);color:var(--fg);border:1px solid var(--border);border-radius:8px;padding:8px 16px;cursor:pointer;font-size:14px}
+  .btn:hover{border-color:var(--accent)}
+  .btn.primary{background:var(--accent);color:#001; border-color:var(--accent);font-weight:600}
+  /* Table */
+  table{width:100%;border-collapse:collapse;font-size:13.5px}
+  th,td{text-align:left;padding:8px 10px;border-bottom:1px solid var(--border);vertical-align:top}
+  th{color:var(--fg3);font-size:11px;text-transform:uppercase;letter-spacing:.5px;position:sticky;top:0;background:var(--bg2)}
+  tr:hover td{background:var(--bg3)}
+  input.search{width:100%;background:var(--bg2);border:1px solid var(--border);border-radius:9px;padding:10px 14px;color:var(--fg);font-size:14px;margin-bottom:12px}
+  input.search:focus{outline:none;border-color:var(--accent)}
+  /* Calculator */
+  .calc{display:grid;grid-template-columns:1fr 1fr;gap:26px;align-items:center}
+  @media(max-width:820px){.calc{grid-template-columns:1fr}}
+  .slider label{display:block;font-size:13px;color:var(--fg2);margin:16px 0 4px}
+  .slider .val{color:var(--accent);font-weight:700}
+  input[type=range]{width:100%;accent-color:var(--accent)}
+  .rho{font-size:64px;font-weight:800;line-height:1;letter-spacing:-1px}
+  .verdict{margin-top:10px;font-size:15px;font-weight:600;padding:10px 14px;border-radius:10px;border:1px solid}
+  .flow-eq{font-family:var(--mono);font-size:13px;color:var(--fg2);margin-top:14px;background:var(--bg2);border:1px solid var(--border);border-radius:8px;padding:10px 12px}
+  .legend{display:flex;flex-wrap:wrap;gap:14px;margin:10px 0 4px;font-size:12.5px;color:var(--fg2)}
+  .legend span{display:inline-flex;align-items:center;gap:6px}
+  .sw{width:12px;height:12px;border-radius:3px;display:inline-block}
+  .callout{border-radius:10px;padding:13px 16px;margin:14px 0;border:1px solid;font-size:14px}
+  .callout.warn{background:rgba(255,95,109,.07);border-color:rgba(255,95,109,.3)}
+  .callout.info{background:rgba(74,163,255,.07);border-color:rgba(74,163,255,.3)}
+  .callout.good{background:rgba(62,207,142,.07);border-color:rgba(62,207,142,.3)}
+  .sev{font-size:10px;font-weight:700;padding:2px 8px;border-radius:20px;text-transform:uppercase;letter-spacing:.5px}
+  details.cm{background:var(--panel);border:1px solid var(--border);border-radius:10px;margin:10px 0;overflow:hidden}
+  details.cm>summary{cursor:pointer;padding:13px 16px;font-weight:600;list-style:none;display:flex;justify-content:space-between;align-items:center;gap:12px}
+  details.cm>summary::-webkit-details-marker{display:none}
+  details.cm>summary::after{content:"+";color:var(--fg3);font-size:20px}
+  details.cm[open]>summary::after{content:"−"}
+  details.cm .body{padding:0 16px 15px;color:var(--fg2);font-size:14px;border-top:1px solid var(--border);padding-top:12px}
+  .chiprow{display:flex;flex-wrap:wrap;gap:7px;margin:6px 0}
+  .chip{font-size:12px;padding:3px 10px;border-radius:20px;background:var(--bg3);border:1px solid var(--border);color:var(--fg2)}
+</style>
+</head>
+<body>
+<div class="layout">
+  <aside class="side">
+    <div class="brand">
+      <h1>ATM Simulator</h1>
+      <p>Интерактивный разбор кода · C++20 · СМО</p>
+    </div>
+    <nav class="nav" id="nav">
+      <a data-s="overview"    class="active"><span class="dot" style="background:var(--accent)"></span>Обзор</a>
+      <a data-s="arch"><span class="dot" style="background:var(--purple)"></span>Архитектура</a>
+      <a data-s="threads"><span class="dot" style="background:var(--green)"></span>Потоки и синхронизация</a>
+      <a data-s="startup"><span class="dot" style="background:var(--yellow)"></span>Как происходит старт</a>
+      <a data-s="fsm"><span class="dot" style="background:var(--blue)"></span>Автомат обслуживания</a>
+      <a data-s="money"><span class="dot" style="background:var(--red)"></span>Деньги и операции</a>
+      <a data-s="dataflow"><span class="dot" style="background:var(--cyan)"></span>Поток данных / снимки</a>
+      <a data-s="queue"><span class="dot" style="background:var(--green)"></span>Загрузка ρ и настройка</a>
+      <a data-s="critical"><span class="dot" style="background:var(--yellow)"></span>Критические места</a>
+      <a data-s="bottleneck"><span class="dot" style="background:var(--red)"></span>Боттлнеки</a>
+      <a data-s="reference"><span class="dot" style="background:var(--grey)"></span>Справочник компонентов</a>
+    </nav>
+    <div class="theme"><button id="themeBtn">🌗 Светлая / тёмная</button></div>
+  </aside>
+
+  <main class="main">
+    <!-- ============ OVERVIEW ============ -->
+    <section id="overview" class="on">
+      <h2 class="title">Как устроен ATM Simulator</h2>
+      <p class="sub">Консольный симулятор одноканальной СМО (система массового обслуживания): один банкомат-«кассир», очередь клиентов, поток прихода и живой дашборд. Ниже — вся механика: компоненты, потоки, старт, автомат состояний, движение денег, критические места и боттлнеки. Кликай по диаграммам и элементам — почти всё интерактивно.</p>
+
+      <div class="grid g3">
+        <div class="card"><h4 style="color:var(--green)">Модель параллелизма</h4><p class="muted" style="margin:0;font-size:14px">«Один писатель — много читателей». Всё изменяемое состояние под <b>одним</b> <span class="ref">std::mutex</span>, пробуждения — через одну <span class="ref">condition_variable</span>, режим — <span class="ref">atomic&lt;AtmState&gt;</span>.</p></div>
+        <div class="card"><h4 style="color:var(--blue)">4 потока</h4><p class="muted" style="margin:0;font-size:14px">Главный/консоль, поток обслуживания, поток прихода, поток отрисовки (только в live-режиме). Координируются 3 примитивами + <span class="ref">outMutex_</span> для stdout.</p></div>
+        <div class="card"><h4 style="color:var(--red)">Инвариант денег</h4><p class="muted" style="margin:0;font-size:14px"><span class="ref">applyOperation</span> двигает счёт клиента и кассу <b>вместе</b>: (Σсчетов − касса) не меняется никогда. Деньги не появляются и не исчезают.</p></div>
+      </div>
+
+      <h3>Что это за программа</h3>
+      <p class="lead">Приходит поток клиентов (пуассоновский или batch). Каждый хочет одну операцию: <b>проверить баланс</b>, <b>снять</b> или <b>внести</b>. Единственный «кассир» (поток обслуживания) берёт клиентов из очереди по одному, тратит на каждого случайное время (нормальное/равномерное/экспоненциальное распределение) и применяет операцию к его счёту и к кассе банкомата. Если клиент ждёт дольше своего терпения — уходит. Оператор в реальном времени видит дашборд и может слать команды (пауза, ТО, стоп и т.д.).</p>
+
+      <div class="callout info"><b>Зачем модель СМО:</b> ключевая величина — загрузка <span class="ref">ρ = λ/μ</span> (интенсивность прихода / интенсивность обслуживания). При ρ&lt;1 банкомат успевает и очередь короткая; при ρ&gt;1 очередь растёт. Раздел «Загрузка ρ» — интерактивный калькулятор.</p></div>
+
+      <h3>Слои (снизу вверх)</h3>
+      <div class="grid g2">
+        <div class="card"><span class="tag" style="background:rgba(255,95,109,.15);color:var(--red)">Ядро (домен)</span><p class="muted" style="font-size:14px">Money, Account, Cashbox, Operation, Client, Types — чистая бизнес-логика без потоков. Библиотека <span class="ref">atmsim_core</span>.</p></div>
+        <div class="card"><span class="tag" style="background:rgba(74,163,255,.15);color:var(--blue)">Движок</span><p class="muted" style="font-size:14px">AtmEngine (многопоточное сердце), ServiceTimeProvider, ClientFactory, SimulationRunner (одно­поточный путь для тестов).</p></div>
+        <div class="card"><span class="tag" style="background:rgba(62,207,142,.15);color:var(--green)">Консоль/UI</span><p class="muted" style="font-size:14px">AdminConsole (управление), CommandParser (разбор команд), LiveRenderer (дашборд), Terminal (платформа), Signals.</p></div>
+        <div class="card"><span class="tag" style="background:rgba(181,140,255,.15);color:var(--purple)">Инфраструктура</span><p class="muted" style="font-size:14px">Config + ConfigLoader (JSON с комментариями), Logger (технический лог в файл), main (точка входа и владелец потоков).</p></div>
+      </div>
+    </section>
+
+    <!-- ============ ARCHITECTURE ============ -->
+    <section id="arch">
+      <h2 class="title">Архитектурная карта</h2>
+      <p class="sub">Кто из чего состоит и кто кого вызывает. Кликни по компоненту — справа появятся его роль, ключевые функции с адресами (файл:строка), кого он вызывает и кто вызывает его.</p>
+      <div class="diagram">
+        <div class="hint">Кликни по любому блоку</div>
+        <svg id="archSvg" viewBox="0 0 900 560" role="img">
+          <defs>
+            <marker id="arr" markerWidth="9" markerHeight="9" refX="7" refY="4" orient="auto"><path d="M0,0 L8,4 L0,8 z" fill="#5b6b7d"/></marker>
+          </defs>
+          <!-- edges (drawn first) -->
+          <g stroke="#3a4757" stroke-width="1.6" fill="none" marker-end="url(#arr)" opacity=".8">
+            <path d="M150,96 L150,140"/>          <!-- main -> config -->
+            <path d="M215,74 C360,74 360,120 430,120"/> <!-- main -> engine -->
+            <path d="M180,68 C560,50 720,70 780,150"/>  <!-- main -> console(admin) top-->
+            <path d="M150,180 L150,150" opacity="0"/>
+            <path d="M150,200 L150,230"/>          <!-- config -> logger area (visual) -->
+            <path d="M500,168 L500,232"/>          <!-- engine -> core -->
+            <path d="M560,150 C660,160 700,200 720,232"/> <!-- engine -> svc time -->
+            <path d="M470,150 C300,190 250,210 220,240"/> <!-- engine -> config(reads) -->
+            <path d="M780,196 L780,150" opacity="0"/>
+            <path d="M775,210 C700,210 620,180 575,158"/> <!-- console -> engine (cmds/reads) -->
+            <path d="M820,246 L820,300"/>          <!-- admin -> parser -->
+            <path d="M760,246 L720,300"/>          <!-- admin -> renderer -->
+            <path d="M700,340 C640,360 600,350 575,168" opacity="0"/>
+            <path d="M690,332 C610,360 560,300 545,168"/> <!-- renderer -> engine (snapshots) -->
+            <path d="M840,300 L855,258" opacity="0"/>
+            <path d="M795,340 L800,392"/>          <!-- renderer -> terminal -->
+            <path d="M860,246 C895,300 895,360 865,392"/> <!-- admin -> terminal -->
+          </g>
+          <!-- nodes -->
+          <g class="node" data-c="main"><rect x="90" y="40" width="120" height="34" rx="8" fill="#1d2733" stroke="var(--yellow)"/><text class="nlabel" x="150" y="55" text-anchor="middle" font-size="13" fill="var(--yellow)">main()</text><text class="nsub" x="150" y="68" text-anchor="middle" font-size="9" fill="#8a97a6">src/main.cpp</text></g>
+          <g class="node" data-c="config"><rect x="80" y="140" width="140" height="42" rx="8" fill="#1d2733" stroke="var(--purple)"/><text class="nlabel" x="150" y="158" text-anchor="middle" font-size="12" fill="var(--purple)">ConfigLoader + Config</text><text class="nsub" x="150" y="172" text-anchor="middle" font-size="9" fill="#8a97a6">config/*.json → Config</text></g>
+          <g class="node" data-c="logger"><rect x="80" y="238" width="140" height="40" rx="8" fill="#1d2733" stroke="var(--grey)"/><text class="nlabel" x="150" y="255" text-anchor="middle" font-size="12" fill="#b3c0cf">Logger</text><text class="nsub" x="150" y="269" text-anchor="middle" font-size="9" fill="#8a97a6">тех. лог → файл</text></g>
+          <g class="node" data-c="engine"><rect x="430" y="86" width="150" height="64" rx="10" fill="#17222e" stroke="var(--blue)" stroke-width="2"/><text class="nlabel" x="505" y="112" text-anchor="middle" font-size="15" fill="var(--blue)">AtmEngine</text><text class="nsub" x="505" y="130" text-anchor="middle" font-size="9" fill="#8a97a6">2 потока · 1 mutex · СМО</text><text class="nsub" x="505" y="143" text-anchor="middle" font-size="9" fill="#8a97a6">src/engine/AtmEngine.cpp</text></g>
+          <g class="node" data-c="core"><rect x="430" y="232" width="150" height="52" rx="9" fill="#1d2733" stroke="var(--red)"/><text class="nlabel" x="505" y="252" text-anchor="middle" font-size="13" fill="var(--red)">Ядро (домен)</text><text class="nsub" x="505" y="268" text-anchor="middle" font-size="9" fill="#8a97a6">Money·Account·Cashbox</text><text class="nsub" x="505" y="279" text-anchor="middle" font-size="9" fill="#8a97a6">Operation·Client·Types</text></g>
+          <g class="node" data-c="svctime"><rect x="650" y="232" width="150" height="52" rx="9" fill="#1d2733" stroke="var(--cyan)"/><text class="nlabel" x="725" y="252" text-anchor="middle" font-size="12" fill="var(--cyan)">ServiceTimeProvider</text><text class="nsub" x="725" y="268" text-anchor="middle" font-size="9" fill="#8a97a6">normal/uniform/exp</text><text class="nsub" x="725" y="279" text-anchor="middle" font-size="9" fill="#8a97a6">длительность → μ</text></g>
+          <g class="node" data-c="admin"><rect x="720" y="150" width="150" height="60" rx="10" fill="#17222e" stroke="var(--green)" stroke-width="2"/><text class="nlabel" x="795" y="174" text-anchor="middle" font-size="14" fill="var(--green)">AdminConsole</text><text class="nsub" x="795" y="190" text-anchor="middle" font-size="9" fill="#8a97a6">главный поток · UI</text><text class="nsub" x="795" y="202" text-anchor="middle" font-size="9" fill="#8a97a6">команды + отчёты</text></g>
+          <g class="node" data-c="parser"><rect x="770" y="300" width="120" height="40" rx="8" fill="#1d2733" stroke="var(--green)"/><text class="nlabel" x="830" y="317" text-anchor="middle" font-size="12" fill="#9fe3c0">CommandParser</text><text class="nsub" x="830" y="331" text-anchor="middle" font-size="9" fill="#8a97a6">строка → Command</text></g>
+          <g class="node" data-c="renderer"><rect x="630" y="300" width="130" height="40" rx="8" fill="#1d2733" stroke="var(--green)"/><text class="nlabel" x="695" y="317" text-anchor="middle" font-size="12" fill="#9fe3c0">LiveRenderer</text><text class="nsub" x="695" y="331" text-anchor="middle" font-size="9" fill="#8a97a6">4-й поток · дашборд</text></g>
+          <g class="node" data-c="terminal"><rect x="740" y="392" width="150" height="40" rx="8" fill="#1d2733" stroke="var(--grey)"/><text class="nlabel" x="815" y="409" text-anchor="middle" font-size="12" fill="#b3c0cf">Terminal + ansi::</text><text class="nsub" x="815" y="423" text-anchor="middle" font-size="9" fill="#8a97a6">TTY·VT·размер·цвета</text></g>
+          <g class="node" data-c="signals"><rect x="90" y="330" width="140" height="40" rx="8" fill="#1d2733" stroke="var(--yellow)"/><text class="nlabel" x="160" y="347" text-anchor="middle" font-size="12" fill="var(--yellow)">Signals</text><text class="nsub" x="160" y="361" text-anchor="middle" font-size="9" fill="#8a97a6">SIGINT/SIGTERM</text></g>
+          <g class="node" data-c="simrunner"><rect x="90" y="420" width="200" height="40" rx="8" fill="#161b22" stroke="#3a4757" stroke-dasharray="4 3"/><text class="nlabel" x="190" y="437" text-anchor="middle" font-size="12" fill="#8a97a6">SimulationRunner (тесты)</text><text class="nsub" x="190" y="451" text-anchor="middle" font-size="9" fill="#6b7888">одно­поточный M2 · не в live</text></g>
+          <text x="450" y="500" text-anchor="middle" font-size="12" fill="#6b7888">Синие/зелёные блоки — потокоёмкие ядра. Пунктир — используется только тестами.</text>
+        </svg>
+      </div>
+      <div class="detail" id="archDetail"><h4>Выбери компонент</h4><p class="role">Кликни блок на схеме, чтобы увидеть его роль, ключевые функции и связи.</p></div>
+    </section>
+
+    <!-- ============ THREADS ============ -->
+    <section id="threads">
+      <h2 class="title">Потоки и синхронизация</h2>
+      <p class="sub">Во время работы живёт до 4 потоков вокруг общего состояния движка. Модель — «один писатель, много читателей»: менять данные имеет право только поток обслуживания. Кликни поток — детали справа.</p>
+      <div class="legend">
+        <span><i class="sw" style="background:var(--green)"></i>писатель</span>
+        <span><i class="sw" style="background:var(--yellow)"></i>продюсер очереди</span>
+        <span><i class="sw" style="background:var(--cyan)"></i>читатели</span>
+        <span><i class="sw" style="background:var(--red)"></i>примитив синхронизации</span>
+      </div>
+      <div class="diagram">
+        <div class="hint">Кликни поток или примитив</div>
+        <svg id="thrSvg" viewBox="0 0 900 470">
+          <!-- central shared state -->
+          <g class="node" data-t="mutex">
+            <rect x="330" y="180" width="240" height="110" rx="14" fill="#241a1e" stroke="var(--red)" stroke-width="2"/>
+            <text x="450" y="206" text-anchor="middle" font-size="14" fill="var(--red)" font-weight="700">Общее состояние движка</text>
+            <text class="nsub" x="450" y="226" text-anchor="middle" font-size="10" fill="#c98a92">queue_ · accounts_ · cashbox_</text>
+            <text class="nsub" x="450" y="240" text-anchor="middle" font-size="10" fill="#c98a92">log_ · roster_ · счётчики</text>
+            <text class="nsub" x="450" y="262" text-anchor="middle" font-size="10.5" fill="#ff8f99">🔒 std::mutex mutex_</text>
+            <text class="nsub" x="450" y="277" text-anchor="middle" font-size="10.5" fill="#ff8f99">🔔 condition_variable wakeUp_ · ⚛ state_</text>
+          </g>
+          <!-- threads -->
+          <g class="node" data-t="service"><rect x="330" y="40" width="240" height="56" rx="10" fill="#16241c" stroke="var(--green)" stroke-width="2"/><text x="450" y="62" text-anchor="middle" font-size="13" fill="var(--green)" font-weight="700">Поток обслуживания — run()</text><text class="nsub" x="450" y="80" text-anchor="middle" font-size="10" fill="#8fd8b3">ЕДИНСТВЕННЫЙ писатель · один клиент за раз</text></g>
+          <g class="node" data-t="arrival"><rect x="40" y="200" width="200" height="72" rx="10" fill="#242013" stroke="var(--yellow)" stroke-width="2"/><text x="140" y="222" text-anchor="middle" font-size="13" fill="var(--yellow)" font-weight="700">Поток прихода</text><text class="nsub" x="140" y="240" text-anchor="middle" font-size="10" fill="#d8c98f">generateArrivals()</text><text class="nsub" x="140" y="255" text-anchor="middle" font-size="10" fill="#d8c98f">кладёт клиентов в queue_</text></g>
+          <g class="node" data-t="console"><rect x="330" y="360" width="240" height="70" rx="10" fill="#1b2430" stroke="var(--cyan)" stroke-width="2"/><text x="450" y="382" text-anchor="middle" font-size="13" fill="var(--cyan)" font-weight="700">Главный / консольный поток</text><text class="nsub" x="450" y="400" text-anchor="middle" font-size="10" fill="#8fd0d0">AdminConsole::run() · команды + чтение</text><text class="nsub" x="450" y="415" text-anchor="middle" font-size="10" fill="#8fd0d0">блокируется на getline</text></g>
+          <g class="node" data-t="render"><rect x="660" y="200" width="200" height="72" rx="10" fill="#1b2430" stroke="var(--cyan)" stroke-width="2"/><text x="760" y="222" text-anchor="middle" font-size="13" fill="var(--cyan)" font-weight="700">Поток отрисовки</text><text class="nsub" x="760" y="240" text-anchor="middle" font-size="10" fill="#8fd0d0">renderLoop() · только live</text><text class="nsub" x="760" y="255" text-anchor="middle" font-size="10" fill="#8fd0d0">снимки → дашборд</text></g>
+          <!-- arrows -->
+          <g fill="none" stroke-width="2">
+            <path d="M450,96 L450,178" stroke="var(--green)" marker-end="url(#arr)"/>
+            <path d="M240,232 L326,232" stroke="var(--yellow)" marker-end="url(#arr)"/>
+            <path d="M450,358 L450,292" stroke="var(--cyan)" marker-end="url(#arr)" opacity=".8"/>
+            <path d="M660,236 L572,236" stroke="var(--cyan)" marker-end="url(#arr)"/>
+          </g>
+          <text x="486" y="140" font-size="10" fill="#8fd8b3">пишет</text>
+          <text x="250" y="222" font-size="10" fill="#d8c98f">enqueue+notify</text>
+          <text x="588" y="224" font-size="10" fill="#8fd0d0">snapshot()</text>
+          <text x="462" y="330" font-size="10" fill="#8fd0d0">команды/чтение</text>
+        </svg>
+      </div>
+      <div class="detail" id="thrDetail"><h4>Выбери поток или примитив</h4><p class="role">Кликни элемент схемы.</p></div>
+
+      <h3>Кооперативная остановка</h3>
+      <p class="lead">Нет «убийства» потоков. <span class="ref">requestStop()</span> под <span class="ref">mutex_</span> ставит <span class="ref">state_=Stopped</span> и делает <span class="ref">notify_all()</span>. Предикат <b>каждого</b> ожидания проверяет <span class="ref">state_==Stopped</span> — поэтому все потоки просыпаются и корректно выходят. Порядок в <span class="ref">main</span> важен: сначала <b>requestStop()</b>, потом <b>join()</b> (иначе дедлок).</p>
+      <div class="callout warn"><b>Почему НЕ jthread/stop_token/condition_variable_any/shared_mutex:</b> связка этих примитивов падала в рантайме на MSVC («unlock of unowned mutex», порча стека). Проект сознательно использует только базовые <span class="ref">std::thread</span> + <span class="ref">std::mutex</span> + <span class="ref">std::condition_variable</span> + <span class="ref">atomic</span>. Подробнее — в разделе «Критические места».</div>
+    </section>
+
+    <!-- ============ STARTUP ============ -->
+    <section id="startup">
+      <h2 class="title">Как происходит старт</h2>
+      <p class="sub">Полная последовательность от запуска процесса до печати итоговой статистики. Листай шаги стрелками или кликай слева.</p>
+      <div class="stepper">
+        <div class="steplist" id="stepList"></div>
+        <div style="flex:1">
+          <div class="stepbody" id="stepBody"></div>
+          <div class="navbtns">
+            <button class="btn" id="prevStep">← Назад</button>
+            <button class="btn primary" id="nextStep">Дальше →</button>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ============ FSM ============ -->
+    <section id="fsm">
+      <h2 class="title">Автомат состояний банкомата</h2>
+      <p class="sub">Режим хранится в <span class="ref">std::atomic&lt;AtmState&gt; state_</span> и читается во всех предикатах ожидания. Кликни состояние — увидишь, что оно значит и какие переходы из него ведут.</p>
+      <div class="diagram">
+        <div class="hint">Кликни состояние</div>
+        <svg id="fsmSvg" viewBox="0 0 900 420">
+          <g fill="none" stroke="#4a5767" stroke-width="1.8" marker-end="url(#arr)">
+            <path d="M225,120 C300,90 360,90 415,110"/>   <!-- idle->serving -->
+            <path d="M415,150 C360,175 300,175 235,150"/>  <!-- serving->idle -->
+            <path d="M470,150 L470,235"/>                  <!-- serving->paused -->
+            <path d="M505,235 C520,190 520,175 505,152"/>  <!-- paused->serving -->
+            <path d="M540,120 C640,110 700,140 720,180"/>  <!-- serving->maint -->
+            <path d="M720,220 C690,270 560,200 545,152"/>  <!-- maint->serving -->
+            <path d="M150,150 L150,300"/>                  <!-- idle->stopped -->
+            <path d="M470,300 L470,152" opacity="0"/>
+            <path d="M760,240 C740,330 300,340 200,325"/>  <!-- maint->stopped -->
+            <path d="M470,152 C470,300 340,325 235,320"/>  <!-- serving->stopped -->
+          </g>
+          <g class="node" data-f="Idle"><circle cx="160" cy="120" r="46" fill="#1b222c" stroke="var(--grey)" stroke-width="2"/><text x="160" y="118" text-anchor="middle" font-size="14" fill="#b3c0cf" font-weight="700">Idle</text><text x="160" y="134" text-anchor="middle" font-size="9" fill="#8a97a6">простой</text></g>
+          <g class="node" data-f="Serving"><circle cx="470" cy="120" r="50" fill="#16241c" stroke="var(--green)" stroke-width="2.5"/><text x="470" y="118" text-anchor="middle" font-size="15" fill="var(--green)" font-weight="700">Serving</text><text x="470" y="134" text-anchor="middle" font-size="9" fill="#8fd8b3">обслуживает</text></g>
+          <g class="node" data-f="Paused"><circle cx="470" cy="270" r="44" fill="#242013" stroke="var(--yellow)" stroke-width="2"/><text x="470" y="268" text-anchor="middle" font-size="14" fill="var(--yellow)" font-weight="700">Paused</text><text x="470" y="284" text-anchor="middle" font-size="9" fill="#d8c98f">пауза</text></g>
+          <g class="node" data-f="Maintenance"><circle cx="760" cy="200" r="50" fill="#161f2c" stroke="var(--blue)" stroke-width="2"/><text x="760" y="196" text-anchor="middle" font-size="13" fill="var(--blue)" font-weight="700">Maintenance</text><text x="760" y="212" text-anchor="middle" font-size="9" fill="#9db8e6">ТО</text></g>
+          <g class="node" data-f="Stopped"><circle cx="160" cy="320" r="46" fill="#241a1e" stroke="var(--red)" stroke-width="2"/><text x="160" y="318" text-anchor="middle" font-size="14" fill="var(--red)" font-weight="700">Stopped</text><text x="160" y="334" text-anchor="middle" font-size="9" fill="#e6a0a6">конец</text></g>
+        </svg>
+      </div>
+      <div class="detail" id="fsmDetail"><h4>Выбери состояние</h4><p class="role">Начальное состояние — <b>Idle</b>. В <b>Stopped</b> можно попасть из любого состояния (кооперативная остановка) — это терминальное состояние.</p></div>
+    </section>
+
+    <!-- ============ MONEY ============ -->
+    <section id="money">
+      <h2 class="title">Деньги и операции</h2>
+      <p class="sub">Вся денежная логика сходится в одной функции — <span class="ref">applyOperation</span> (src/core/Operation.cpp). Она — «центр сохранения денег»: счёт клиента и касса банкомата двигаются согласованно.</p>
+
+      <div class="callout good"><b>Инвариант сохранения денег:</b> при внесении оба (счёт и касса) растут на сумму, при снятии оба падают на сумму. Поэтому разность <b>(Σ всех счетов − касса)</b> постоянна навсегда. Проверяется тестом <span class="ref">money_conservation_invariant</span>.</div>
+
+      <div class="diagram">
+        <svg id="moneySvg" viewBox="0 0 900 300">
+          <g class="node" data-m="check"><rect x="30" y="40" width="250" height="90" rx="10" fill="#1b222c" stroke="var(--grey)"/><text x="155" y="66" text-anchor="middle" font-size="14" fill="#b3c0cf" font-weight="700">CheckBalance</text><text class="nsub" x="155" y="88" text-anchor="middle" font-size="10" fill="#8a97a6">ничего не двигает</text><text class="nsub" x="155" y="104" text-anchor="middle" font-size="10" fill="#8a97a6">всегда Success</text></g>
+          <g class="node" data-m="deposit"><rect x="325" y="40" width="250" height="90" rx="10" fill="#16241c" stroke="var(--green)"/><text x="450" y="66" text-anchor="middle" font-size="14" fill="var(--green)" font-weight="700">Deposit (внесение)</text><text class="nsub" x="450" y="88" text-anchor="middle" font-size="11" fill="#8fd8b3">счёт += сумма · касса += сумма</text><text class="nsub" x="450" y="105" text-anchor="middle" font-size="10" fill="#8a97a6">отказ только InvalidAmount (≤0)</text></g>
+          <g class="node" data-m="withdraw"><rect x="620" y="40" width="250" height="90" rx="10" fill="#241a1e" stroke="var(--red)"/><text x="745" y="66" text-anchor="middle" font-size="14" fill="var(--red)" font-weight="700">Withdraw (снятие)</text><text class="nsub" x="745" y="88" text-anchor="middle" font-size="11" fill="#e6a0a6">счёт −= сумма · касса −= сумма</text><text class="nsub" x="745" y="105" text-anchor="middle" font-size="10" fill="#8a97a6">двойная проверка ↓</text></g>
+          <g class="node" data-m="withdraw"><rect x="620" y="160" width="250" height="46" rx="8" fill="#1d2733" stroke="#5a3a3f"/><text x="745" y="178" text-anchor="middle" font-size="10.5" fill="#e6a0a6">сумма &gt; баланса счёта → InsufficientFunds</text><text x="745" y="196" text-anchor="middle" font-size="10.5" fill="#e6a0a6">касса не может выдать → InsufficientCash</text></g>
+          <g class="node" data-m="account"><rect x="325" y="230" width="240" height="46" rx="8" fill="#1d2733" stroke="var(--cyan)"/><text x="445" y="248" text-anchor="middle" font-size="12" fill="var(--cyan)" font-weight="700">Account (счёт клиента)</text><text class="nsub" x="445" y="266" text-anchor="middle" font-size="9" fill="#8a97a6">withdraw/deposit · «нельзя в минус»</text></g>
+          <g class="node" data-m="cashbox"><rect x="600" y="230" width="240" height="46" rx="8" fill="#1d2733" stroke="var(--yellow)"/><text x="720" y="248" text-anchor="middle" font-size="12" fill="var(--yellow)" font-weight="700">Cashbox (касса)</text><text class="nsub" x="720" y="266" text-anchor="middle" font-size="9" fill="#8a97a6">accept/dispense/canDispense</text></g>
+        </svg>
+      </div>
+      <div class="detail" id="moneyDetail"><h4>Выбери операцию или объект</h4><p class="role">Кликни блок выше.</p></div>
+
+      <h3>Как считаются деньги и время</h3>
+      <div class="grid g2">
+        <div class="card"><h4>Money — целые «копейки»</h4><p class="muted" style="font-size:14px">Тип <span class="ref">Money = int64</span> в <b>минорных единицах</b>; <span class="ref">kMinorUnitsPerMajor = 100</span>. <span class="ref">formatMoney</span> делит на 100 и печатает 2 знака: <span class="ref">50000000 → «500000.00»</span>. Никаких float у денег — нет ошибок округления.</p></div>
+        <div class="card"><h4>ServiceTimeProvider — μ</h4><p class="muted" style="font-size:14px">Длительность обслуживания: <b>normal</b>(mean,stddev, отсечка снизу min), <b>uniform</b>[min,max], <b>exponential</b>(1/mean, отсечка min). Интенсивность обслуживания <span class="ref">μ = 1/среднее</span> — вторая половина формулы ρ=λ/μ.</p></div>
+      </div>
+    </section>
+
+    <!-- ============ DATAFLOW ============ -->
+    <section id="dataflow">
+      <h2 class="title">Поток данных и снимки (snapshots)</h2>
+      <p class="sub">Читатели (консоль, дашборд) НИКОГДА не лезут в данные движка напрямую. Они зовут const-методы-снимки, каждый из которых берёт <span class="ref">mutex_</span>, копирует маленький DTO и отпускает лок. Это и есть «много читателей».</p>
+      <div class="diagram">
+        <svg viewBox="0 0 900 340">
+          <g fill="none" stroke="#4a5767" stroke-width="1.8" marker-end="url(#arr)">
+            <path d="M170,90 L280,90"/>
+            <path d="M470,90 L560,90"/>
+            <path d="M665,120 L665,180"/>
+            <path d="M620,210 C480,230 360,180 300,120" opacity=".9"/>
+            <path d="M710,210 C740,250 700,270 620,275"/>
+          </g>
+          <rect x="30" y="66" width="140" height="48" rx="8" fill="#1d2733" stroke="var(--purple)"/><text x="100" y="86" text-anchor="middle" font-size="12" fill="var(--purple)">Config</text><text class="nsub" x="100" y="102" text-anchor="middle" font-size="9" fill="#8a97a6">параметры</text>
+          <rect x="280" y="60" width="190" height="60" rx="10" fill="#17222e" stroke="var(--blue)" stroke-width="2"/><text x="375" y="84" text-anchor="middle" font-size="13" fill="var(--blue)" font-weight="700">AtmEngine</text><text class="nsub" x="375" y="102" text-anchor="middle" font-size="9" fill="#8a97a6">писатели меняют состояние</text>
+          <rect x="560" y="60" width="210" height="120" rx="10" fill="#1b2430" stroke="var(--cyan)"/><text x="665" y="82" text-anchor="middle" font-size="12" fill="var(--cyan)" font-weight="700">Снимки (DTO)</text><text class="nsub" x="665" y="100" text-anchor="middle" font-size="9.5" fill="#8fd0d0">AtmSnapshot · StatsSnapshot</text><text class="nsub" x="665" y="114" text-anchor="middle" font-size="9.5" fill="#8fd0d0">ClientSnapshot · OperationRecord</text><text class="nsub" x="665" y="134" text-anchor="middle" font-size="9" fill="#8a97a6">каждый: lock_guard(mutex_)</text><text class="nsub" x="665" y="148" text-anchor="middle" font-size="9" fill="#8a97a6">копия → отпустил лок</text><text class="nsub" x="665" y="166" text-anchor="middle" font-size="9" fill="#8a97a6">snapshot/queue/stats/operations…</text>
+          <rect x="560" y="255" width="120" height="44" rx="8" fill="#1b2430" stroke="var(--cyan)"/><text x="620" y="275" text-anchor="middle" font-size="11" fill="var(--cyan)">LiveRenderer</text><text class="nsub" x="620" y="290" text-anchor="middle" font-size="9" fill="#8a97a6">4 снимка/кадр</text>
+          <rect x="230" y="90" width="10" height="10" opacity="0"/>
+          <rect x="700" y="255" width="150" height="44" rx="8" fill="#1b2430" stroke="var(--cyan)"/><text x="775" y="275" text-anchor="middle" font-size="11" fill="var(--cyan)">AdminConsole</text><text class="nsub" x="775" y="290" text-anchor="middle" font-size="9" fill="#8a97a6">команды status/stats…</text>
+        </svg>
+      </div>
+      <div class="grid g2" style="margin-top:14px">
+        <div class="card"><h4 style="color:var(--cyan)">Снимки движка</h4><ul class="tight muted" style="font-size:13.5px">
+          <li><span class="ref">snapshot()</span> — режим, касса, кто обслуживается, счётчики, аптайм, lowCash, направление кассы</li>
+          <li><span class="ref">queueSnapshot()</span> — копия всей очереди (ожидание/терпение)</li>
+          <li><span class="ref">statsSnapshot()</span> — обслужено/ушли, ср. ожидание/обслуживание, <b>ρ</b>, загрузка</li>
+          <li><span class="ref">clientReport(id)</span>, <span class="ref">balanceOf(id)</span>, <span class="ref">operations(filter)</span> — по журналу</li>
+        </ul></div>
+        <div class="card"><h4 style="color:var(--green)">Почему это безопасно</h4><p class="muted" style="font-size:13.5px">Критические секции коротки (только копирование). Во время долгого <b>обслуживания</b> лок отпущен (<span class="ref">wait_for</span> его освобождает), поэтому снимок никогда не ждёт случайную задержку обслуживания — оператор видит «живую» картинку без залипаний.</p></div>
+      </div>
+    </section>
+
+    <!-- ============ QUEUE / RHO ============ -->
+    <section id="queue">
+      <h2 class="title">Загрузка ρ и настройка</h2>
+      <p class="sub">Поведение системы определяет одна величина — загрузка <span class="ref">ρ = λ/μ</span>. Покрути ползунки: приход <b>λ</b> и время обслуживания задают, будет ли очередь расти или таять.</p>
+      <div class="card">
+        <div class="calc">
+          <div>
+            <div class="slider">
+              <label>arrival_rate_per_minute: <span class="val" id="vRate">20</span> клиентов/мин</label>
+              <input type="range" id="rate" min="1" max="60" step="1" value="20">
+            </div>
+            <div class="slider">
+              <label>service_time.mean_seconds: <span class="val" id="vMean">5</span> с</label>
+              <input type="range" id="mean" min="1" max="40" step="1" value="5">
+            </div>
+            <div class="flow-eq" id="calcEq"></div>
+          </div>
+          <div style="text-align:center">
+            <div class="rho" id="rhoVal">—</div>
+            <div class="muted" style="font-size:13px">ρ = λ / μ</div>
+            <div class="verdict" id="verdict"></div>
+          </div>
+        </div>
+      </div>
+      <h3>Рычаги в конфиге</h3>
+      <table>
+        <thead><tr><th>Хочу…</th><th>Крутить</th><th>Как</th></tr></thead>
+        <tbody>
+          <tr><td>Очередь <b>заполнялась</b></td><td><span class="ref">arrival_rate_per_minute</span> ↑ и/или <span class="ref">mean_seconds</span> ↑</td><td>довести ρ&gt;1; растёт со скоростью ≈ (λ−μ)/сек</td></tr>
+          <tr><td>Быстрее <b>обслуживать</b></td><td><span class="ref">mean_seconds</span> ↓ (и <span class="ref">stddev</span> ↓)</td><td>выше μ, ρ падает, ожидание короче</td></tr>
+          <tr><td>Меньше <b>InsufficientFunds</b></td><td><span class="ref">initial_balance</span> ≥ <span class="ref">amount_range.max</span></td><td>снимаемая сумма всегда «по карману»</td></tr>
+          <tr><td>Очередь <b>держалась</b>, а не таяла уходами</td><td><span class="ref">patience_seconds</span> ↑</td><td>клиенты дольше терпят, меньше reneging</td></tr>
+          <tr><td>Быстрее «по реальному времени»</td><td><span class="ref">time_scale</span> ↑</td><td>модельное время в N раз быстрее; механика та же</td></tr>
+        </tbody>
+      </table>
+      <div class="callout info" style="margin-top:16px">Конфиг читается <b>один раз при старте</b> (рантайм). Правки значений применяются на следующем запуске — <b>без пересборки</b>. Комментарии <span class="ref">//</span> в JSON разрешены (парсер их игнорирует).</div>
+    </section>
+
+    <!-- ============ CRITICAL ============ -->
+    <section id="critical">
+      <h2 class="title">Критические места</h2>
+      <p class="sub">Тонкие, но важные для корректности и «неломучести» моменты. Разверни карточку — детали с адресами.</p>
+      <div id="cmList"></div>
+    </section>
+
+    <!-- ============ BOTTLENECKS ============ -->
+    <section id="bottleneck">
+      <h2 class="title">Боттлнеки</h2>
+      <p class="sub">Пределы производительности и точки конкуренции. Для симулятора этого масштаба почти все — приемлемы by design; помечено, где именно жмёт.</p>
+      <div id="bnList"></div>
+    </section>
+
+    <!-- ============ REFERENCE ============ -->
+    <section id="reference">
+      <h2 class="title">Справочник компонентов</h2>
+      <p class="sub">Все файлы проекта с ролью и ключевыми элементами. Поиск фильтрует по имени, файлу и описанию.</p>
+      <input class="search" id="refSearch" placeholder="Поиск: например, mutex, snapshot, applyOperation, Terminal…">
+      <table>
+        <thead><tr><th style="width:170px">Компонент</th><th style="width:210px">Файл</th><th>Роль и ключевые элементы</th></tr></thead>
+        <tbody id="refBody"></tbody>
+      </table>
+    </section>
+  </main>
+</div>
+
+<script>
+/* ---------------- data ---------------- */
+const ARCH = {
+  main:{t:"main() — точка входа и владелец потоков",r:"Загружает конфиг, создаёт логгер и движок, ставит обработчики сигналов, порождает 2 рабочих потока, отдаёт управление консоли, потом кооперативно останавливает и печатает итоги.",
+    keys:["ConfigLoader::loadFromFile — грузит конфиг (main.cpp:28)","Logger объявлен ПЕРЕД движком → разрушается последним (main.cpp:31)","AtmEngine engine(cfg,&logger) (main.cpp:38)","installSignalHandlers() (main.cpp:39)","std::thread engineThread{run()} · arrivalThread{generateArrivals()} (main.cpp:44-45)","console.run() — блокирует main до stop/EOF/сигнала (main.cpp:48)","requestStop() → join() → печать статистики (main.cpp:55-74)"],
+    calls:["ConfigLoader","AtmEngine","AdminConsole","Signals","Logger"],by:["OS / C++ runtime"]},
+  config:{t:"ConfigLoader + Config",r:"Читает config/default_config.json (nlohmann/json с включёнными комментариями), заполняет структуру Config значениями по умолчанию + из файла, проверяет согласованность.",
+    keys:["loadFromFile — ищет файл ВВЕРХ по каталогам от cwd (ConfigLoader.cpp:175)","json::parse(...,ignore_comments=true) — разрешает // и /* */ (ConfigLoader.cpp:98)","value(key,default) — отсутствующий ключ → дефолт","validate() — отвергает битые значения (веса<0, min>max, stddev≤0 для normal, ρ терпения и т.д.)","Config — AtmConfig/ClientsConfig/ServiceTimeConfig/… (Config.hpp)"],
+    calls:["nlohmann/json"],by:["main() (main.cpp:28)"]},
+  logger:{t:"Logger — технический лог",r:"Пишет уровневые сообщения ([HH:MM:SS.mmm] [LEVEL] …) в файл. Потокобезопасен: каждая запись под своим mutex + flush (не теряем логи при аварии).",
+    keys:["log(level,msg) — отсекает ниже min-уровня, пишет под lock_guard(mutex_)+flush (Logger.cpp:41-48)","parseLevel — debug<info<warn<error (Logger.cpp:50)","конструктор открывает файл на trunc (Logger.cpp:38)"],
+    calls:["std::ofstream"],by:["main()","AtmEngine (debug/warn вне лока движка)"]},
+  engine:{t:"AtmEngine — многопоточное ядро СМО",r:"Сердце: единственный писатель (поток run()), продюсер очереди (generateArrivals()), команды администратора и потокобезопасные снимки. Всё под одним mutex_ + одна condition_variable + atomic state_.",
+    keys:["run() — цикл обслуживания, автомат состояний, прерываемая задержка (AtmEngine.cpp:125)","generateArrivals() — интервал прихода → makeClient → enqueue → notify (AtmEngine.cpp:68)","requestPause/Resume/Stop/Maintenance/endMaintenance — меняют state_ под локом + notify_all (AtmEngine.cpp:295-355)","snapshot/queueSnapshot/statsSnapshot/… — читатели под lock_guard(mutex_) (AtmEngine.cpp:382-496)","mutex_ / wakeUp_ / state_ (AtmEngine.hpp:98/108/101)","serviceRng_ / arrivalRng_ — ДВА независимых ГПСЧ (AtmEngine.hpp:120-121)"],
+    calls:["applyOperation (Operation.cpp)","ServiceTimeProvider","Config","Logger"],by:["main() (2 потока)","AdminConsole (команды/чтение)","LiveRenderer (чтение)"]},
+  core:{t:"Ядро домена — Money · Account · Cashbox · Operation · Client · Types",r:"Чистая бизнес-логика без потоков. Библиотека atmsim_core, легко тестируется.",
+    keys:["applyOperation — центр движения денег: счёт+касса вместе (Operation.cpp:16)","Account.withdraw/deposit — «нельзя в минус» → InsufficientFunds (Account.cpp)","Cashbox.accept/dispense/canDispense → InsufficientCash (Cashbox.cpp)","Money = int64 минорных единиц; formatMoney ÷100 (Money.cpp)","Types — OperationType/AtmState/ClientState/OperationStatus + to_string (Types.hpp)"],
+    calls:["—"],by:["AtmEngine","SimulationRunner"]},
+  svctime:{t:"ServiceTimeProvider — длительность обслуживания",r:"Фабрика распределений времени обслуживания. Даёт nextSeconds(op, rng); отсекает снизу min_seconds. Определяет μ в формуле ρ=λ/μ.",
+    keys:["Normal(mean,stddev, отсечка min) (ServiceTimeProvider.cpp:21)","Uniform[min,max] (ServiceTimeProvider.cpp:7)","Exponential(1/mean, отсечка min) (ServiceTimeProvider.cpp:36)","makeServiceTimeProvider(cfg) — выбор по distribution (ServiceTimeProvider.cpp:51)","expectedServiceSeconds — номинальное среднее для ρ (ServiceTimeProvider.cpp:64)"],
+    calls:["<random>"],by:["AtmEngine (serviceRng_)","SimulationRunner"]},
+  admin:{t:"AdminConsole — контроллер интерфейса (главный поток)",r:"Переключает командный режим и live-дашборд. Чистый читатель движка + шлёт управляющие команды. Владеет потоком отрисовки в live-режиме.",
+    keys:["run() — выбор режима по liveMode && TTY (AdminConsole.cpp:203)","runCommandLoop() — pull-REPL: prompt→getline→parse→dispatch (AdminConsole.cpp:221)","runLiveSession() — renderer.start(), строка ввода на height()+2, cmd> цикл (AdminConsole.cpp:284)","showOverlay() — полноэкранный ответ поверх дашборда (пауза рендера) (AdminConsole.cpp:263)","print*/doExport — отчёты и CSV-экспорт (AdminConsole.cpp:41-183)"],
+    calls:["CommandParser","LiveRenderer","Terminal","AtmEngine (команды+снимки)"],by:["main() (main.cpp:48)"]},
+  parser:{t:"CommandParser — строка → Command",r:"Чистый, без I/O, переводчик строки оператора в структуру Command (или человекочитаемую ошибку). Не бросает исключений — тестируется в изоляции.",
+    keys:["parseCommand — токенизация, разбор help/status/queue/pause/maintenance/client/export/operations… (CommandParser.cpp:34)","parsePositive — stoll с отбросом мусора (CommandParser.cpp:11)","Command{type,clientId,last,opType,seconds,filename,error} (CommandParser.hpp)"],
+    calls:["std::stoll","Types (OperationType)"],by:["AdminConsole (оба цикла)"]},
+  renderer:{t:"LiveRenderer — живой дашборд (4-й поток)",r:"С частотой refresh_hz читает снимки движка и перерисовывает верхние height() строк. Только чтение — состояние ядра не мутирует.",
+    keys:["renderLoop() — прерываемый сон sleepCv_.wait_for(period,!running_) (LiveRenderer.cpp:277)","paintFrame() — saveCursor→строки→restoreCursor, под lock_guard(outMutex_) (LiveRenderer.cpp:263)","composeLines() — двухколоночный кадр; цвет числа кассы по направлению (LiveRenderer.cpp:89)","ФИКСИРОВАННАЯ высота: всегда queueVisible слотов + строка переполнения (LiveRenderer.cpp:185)","fit()/visibleWidth() — ANSI- и UTF-8-корректная подгонка ширины","outputMutex() — общий с консолью mutex вывода (LiveRenderer.hpp:54)"],
+    calls:["AtmEngine (4 снимка/кадр)","Terminal (размер)","formatMoney"],by:["AdminConsole (start/stop/pause/resume)"]},
+  terminal:{t:"Terminal + ansi:: — платформенный слой",r:"Единственное место с #ifdef под ОС: определение TTY, включение VT/UTF-8, размер окна. Плюс header-inline ansi:: строки escape-последовательностей.",
+    keys:["isStdoutTty() — _isatty / ::isatty; гейт live-режима (Terminal.cpp:27)","enableAnsi() — Windows: CP_UTF8 + ENABLE_VIRTUAL_TERMINAL_PROCESSING (Terminal.cpp:35)","width()/height() — WinAPI / ioctl / env / дефолт 80×24 (Terminal.cpp:50-78)","ansi:: — saveCursor/restoreCursor/moveTo/altScreen/цвета (Terminal.hpp)"],
+    calls:["WinAPI / POSIX ioctl"],by:["AdminConsole","LiveRenderer","(ansi:: везде)"]},
+  signals:{t:"Signals — SIGINT/SIGTERM",r:"Минимальная async-signal-safe обработка: хэндлер лишь ставит флаг. На POSIX sigaction ставится БЕЗ SA_RESTART, чтобы блокирующий getline прервался (EINTR).",
+    keys:["g_shutdownFlag — единственное, что трогает хэндлер (volatile sig_atomic_t) (Signals.cpp:11)","onSignal — тело: flag=1 (Signals.cpp:13)","installSignalHandlers — Windows signal / POSIX sigaction sa_flags=0 (Signals.cpp:19)","shutdownRequested() — опрашивается main после console.run() (Signals.cpp:37)"],
+    calls:["std::signal / ::sigaction"],by:["main() (установка + опрос)"]},
+  simrunner:{t:"SimulationRunner — одно­поточный путь (ТОЛЬКО тесты)",r:"Детерминированная дискретно-событийная симуляция очереди для валидации логики СМО. НЕ вызывается из main() / live-приложения — только из юнит-тестов.",
+    keys:["run(cfg) — чистая функция, без потоков/мьютексов (SimulationRunner.cpp:25)","один ГПСЧ от random_seed → полная воспроизводимость","делит домен (applyOperation, ClientFactory, ServiceTimeProvider) с live-движком","проверка сохранения денег (SimulationRunner.cpp:135)"],
+    calls:["ClientFactory","ServiceTimeProvider","applyOperation"],by:["tests/test_simulation.cpp"]}
+};
+const THREADS = {
+  service:{t:"Поток обслуживания — AtmEngine::run()",r:"ЕДИНСТВЕННЫЙ писатель. Ждёт работу, крутит автомат состояний, обслуживает по одному клиенту с прерываемой задержкой, применяет операцию, обновляет статистику.",
+    keys:["Фаза 1 (под локом): ждать работу по предикату; ветка Maintenance","reneging: если голова очереди перетерпела — уходит, не обслуживаем","Фаза 2: wakeUp_.wait_for(realDuration, state!=Serving) — лок ОТПУЩЕН на время задержки","applyOperation → запись в log_ → счётчики → следующий режим","всё изменяемое состояние трогает только этот поток"],
+    calls:["ServiceTimeProvider","applyOperation","wakeUp_ wait/notify"],by:["main.cpp:44"]},
+  arrival:{t:"Поток прихода — AtmEngine::generateArrivals()",r:"Продюсер очереди. Ждёт интервал между приходами (прерываемо), создаёт клиента ВНЕ лока, кладёт в очередь под локом, будит поток обслуживания.",
+    keys:["интервал: poisson→экспоненциальный / batch→постоянный; realWait = gap/time_scale","makeClient() ВНЕ лока — только arrivalRng_ (нет гонки)","под локом РЕ-проверка state_==Stopped перед enqueue (стоп между локами)","queue_.push_back + roster_.push_back + Idle→Serving; notify_all","останавливается когда сгенерированы все count клиентов или Stopped"],
+    calls:["makeClient","wakeUp_ wait/notify"],by:["main.cpp:45"]},
+  console:{t:"Главный / консольный поток — AdminConsole::run()",r:"Владелец процесса пока идёт работа. Блокируется на getline, разбирает команды, шлёт управляющие вызовы движку, читает снимки для отчётов. В live-режиме владеет потоком отрисовки.",
+    keys:["блокирующий std::getline(std::cin) — здесь поток «спит» между командами","команды → requestPause/Resume/Maintenance/Stop; отчёты → снимки","live: рисует строку cmd> на height()+2, координирует stdout через outMutex_","на stop/EOF/сигнал → выход → main делает join потоков"],
+    calls:["AtmEngine (команды+снимки)","LiveRenderer","CommandParser"],by:["main.cpp:48"]},
+  render:{t:"Поток отрисовки — LiveRenderer::renderLoop()",r:"Только в live-режиме. С частотой refresh_hz читает снимки и перерисовывает дашборд. Строго read-only.",
+    keys:["на кадр берёт 4 снимка движка (snapshot/stats/queue/operations)","paintFrame под outMutex_ + save/restore курсора (не затирает ввод)","прерываемый сон sleepCv_.wait_for(period,!running_) — стоп мгновенный","создаётся в runLiveSession (start), join в stop (идемпотентно)"],
+    calls:["AtmEngine (снимки)","Terminal"],by:["AdminConsole (start/stop)"]},
+  mutex:{t:"Примитивы синхронизации — mutex_ · wakeUp_ · state_ · outMutex_",r:"Вся координация 4 потоков держится на 3+1 примитивах. Модель «один писатель, много читателей».",
+    keys:["std::mutex mutex_ — ОДИН эксклюзивный лок на ВСЁ изменяемое состояние (AtmEngine.hpp:98)","std::condition_variable wakeUp_ — все спят на ней; notify_all после смены state_ (AtmEngine.hpp:108)","std::atomic<AtmState> state_ — режим, читается в предикатах без лока (AtmEngine.hpp:101)","std::mutex outMutex_ (в LiveRenderer) — сериализует stdout между рендером и консолью","НЕТ jthread/stop_token/condition_variable_any/shared_mutex — падали на MSVC"],
+    calls:["—"],by:["все 4 потока"]}
+};
+const FSM = {
+  Idle:{c:"var(--grey)",t:"Idle — простой",d:"Очередь пуста, никого не обслуживаем. Стартовое состояние движка.",tr:["→ Serving: пришёл клиент (generateArrivals ставит Idle→Serving под локом, AtmEngine.cpp:116)","→ Paused: команда pause","→ Maintenance: команда maintenance start","→ Stopped: команда stop / сигнал"]},
+  Serving:{c:"var(--green)",t:"Serving — обслуживание",d:"Кассир занят клиентом или готов брать следующего из непустой очереди. Здесь происходит вся работа: задержка обслуживания + applyOperation.",tr:["→ Idle: обслужили, очередь опустела (AtmEngine.cpp:272)","→ Paused: команда pause (прерывает задержку мгновенно)","→ Maintenance: команда maintenance start","→ Stopped: команда stop / сигнал"]},
+  Paused:{c:"var(--yellow)",t:"Paused — пауза",d:"Обслуживание приостановлено оператором. Предикат ожидания ложен → поток обслуживания спит, не крутя цикл. Приход клиентов продолжается.",tr:["→ Idle / Serving: команда resume (по наличию очереди, AtmEngine.cpp:307)","→ Maintenance: команда maintenance start","→ Stopped: команда stop / сигнал"]},
+  Maintenance:{c:"var(--blue)",t:"Maintenance — техобслуживание (ТО)",d:"Спец-режим: клиентов не берём. При входе каждый в очереди с вероятностью renege_probability уходит (одноразовая чистка). Длится по таймеру или до команды maintenance stop.",tr:["→ Idle / Serving: команда maintenance stop ИЛИ истёк дедлайн (авто-конец + notify_all!)","→ Stopped: команда stop / сигнал (перебивает ТО)"]},
+  Stopped:{c:"var(--red)",t:"Stopped — остановка (терминальное)",d:"Кооперативная остановка: requestStop() ставит state_=Stopped под локом + notify_all. Все предикаты ожиданий видят Stopped и выходят. Попасть сюда можно ИЗ ЛЮБОГО состояния.",tr:["(терминальное — переходов наружу нет; потоки завершаются, main делает join)"]}
+};
+const MONEY = {
+  check:{t:"CheckBalance — проверка баланса",d:"Ничего не двигает: ни счёт, ни кассу. Всегда возвращает Success с текущим балансом. Сумма не нужна (0). Кассу не нагружает — «дешёвая» операция."},
+  deposit:{t:"Deposit — внесение",d:"Деньги входят В систему: account.deposit(amount) И cashbox.accept(amount) — обе величины растут на одну сумму. Отказ возможен только InvalidAmount (сумма ≤ 0). Внесения РЕФИЛЛЯТ кассу."},
+  withdraw:{t:"Withdraw — снятие (двойная проверка)",d:"Деньги выходят ИЗ системы. Проверка №1: хватает ли на СЧЁТЕ клиента (иначе InsufficientFunds). Проверка №2: может ли КАССА выдать (иначе InsufficientCash). Только если оба ок — account.withdraw И cashbox.dispense на одну сумму."},
+  account:{t:"Account — счёт клиента",d:"withdraw/deposit с правилом «нельзя уйти в минус»: сумма > баланса → InsufficientFunds. Именно баланс счёта, а не касса, — причина частых отказов снятия при малом initial_balance."},
+  cashbox:{t:"Cashbox — касса банкомата",d:"accept (внести) / dispense (выдать) / canDispense (хватает ли). Отдельная от счетов величина. При падении ниже low_cash_threshold — метка «НИЗКАЯ». Отказ выдачи → InsufficientCash."}
+};
+const STEPS = [
+  ["Запуск процесса","Путь конфига = argv[1] или config/default_config.json (main.cpp:25). Пока НИЧЕГО не запущено."],
+  ["Загрузка конфига","ConfigLoader::loadFromFile — ищет файл вверх по каталогам, парсит JSON (с комментариями), проверяет validate(). Ошибка → ConfigError → stderr + return 1, потоки не стартуют (main.cpp:28,78)."],
+  ["Инициализация логгера","Logger объявлен ПЕРЕД движком (разрушится последним). Открывает файл лога на trunc, пишет «Конфигурация загружена» (main.cpp:31)."],
+  ["Баннер","Печать имени/версии, числа клиентов, файла лога (main.cpp:34)."],
+  ["Создание движка","AtmEngine engine(cfg,&logger): касса = initial_cash, 2 ГПСЧ (seed / seed+1), по счёту на клиента, state_ = Idle (main.cpp:38)."],
+  ["Обработчики сигналов","installSignalHandlers(): SIGINT/SIGTERM → onSignal ставит g_shutdownFlag. На POSIX — без SA_RESTART, чтобы прервать getline (main.cpp:39)."],
+  ["Поток обслуживания","std::thread engineThread{ engine.run() } — цикл обслуживания стартует СРАЗУ, ещё до показа консоли (main.cpp:44)."],
+  ["Поток прихода","std::thread arrivalThread{ engine.generateArrivals() } — начинает генерировать клиентов (main.cpp:45)."],
+  ["Консоль забирает main","AdminConsole console(engine,cfg); console.run() блокирует ГЛАВНЫЙ поток. Выбор режима: live (если liveMode && TTY) или командный (main.cpp:47-48)."],
+  ["(live) 4-й поток","runLiveSession() создаёт LiveRenderer (мерит терминал, считает height один раз), renderer.start() порождает поток отрисовки; строка ввода — на height()+2 (AdminConsole.cpp:285-292)."],
+  ["Работа","Потоки крутятся: приход → очередь → обслуживание; консоль ждёт команды на getline; рендер перерисовывает дашборд. Команды меняют state_ и видны на следующем кадре."],
+  ["Триггер выхода","«stop» (→ requestStop), либо EOF, либо сигнал прерывает getline. Любой путь → console.run() возвращает управление (AdminConsole.cpp:226,245,304)."],
+  ["Кооперативная остановка","engine.requestStop(): под mutex_ state_=Stopped + notify_all() — оба рабочих потока видят Stopped в предикатах (main.cpp:55)."],
+  ["join потоков","engineThread.join(); arrivalThread.join() — ОБЯЗАТЕЛЬНО после requestStop(), иначе дедлок (main.cpp:56-57)."],
+  ["Итоговая статистика","statsSnapshot()+snapshot(): обслужено/ушли, ср. ожидание/обслуживание, ρ, загрузка, аптайм, касса; финальная запись в лог (main.cpp:60-77)."],
+  ["Выход","main возвращает 0; стек разматывается: движок (потоки уже сджойнены) разрушается, логгер — последним (main.cpp:82)."]
+];
+const CRITICAL = [
+  ["Избегание потери пробуждения (lost wakeup)","warn","Каждое wakeUp_.wait использует ПРЕДИКАТ, читающий state_, а смена state_ всегда под mutex_ ДО notify_all. Так как изменение и проверка упорядочены одним мьютексом, ни одно уведомление не теряется, а спонтанные пробуждения безвредны (AtmEngine.cpp:88,178,229; 318-320)."],
+  ["Лок отпущен на время долгого обслуживания","good","Фаза 2 — wakeUp_.wait_for освобождает mutex_ на всю (реальную) задержку обслуживания. Поэтому читатели-снимки НИКОГДА не ждут случайную задержку — дашборд «живой» (AtmEngine.cpp:229)."],
+  ["Прерываемая задержка обслуживания","good","Предикат «state != Serving» означает, что пауза/стоп/ТО мгновенно прерывают случайную задержку вместо того, чтобы «доспать» её. Операцию при этом доводят до конца — клиент считается обслуженным честно (AtmEngine.cpp:229-238)."],
+  ["Стоп «между локами» в потоке прихода","warn","makeClient() выполняется ВНЕ лока. Перед enqueue код РЕ-проверяет state_==Stopped под локом и не добавляет клиента — иначе «висящий» Waiting-клиент исказил бы итоговые счётчики (AtmEngine.cpp:111)."],
+  ["Два независимых ГПСЧ","warn","std::mt19937_64 не имеет внутренней синхронизации → один движок из двух потоков = гонка данных. Держим serviceRng_ (seed) и arrivalRng_ (seed+1) строго по потокам; даже bernoulli при ТО берёт serviceRng_ из потока обслуживания (AtmEngine.cpp:17-18,120-121)."],
+  ["Авто-конец ТО ОБЯЗАН делать notify","warn","Когда истёк дедлайн ТО, поток обслуживания меняет state и зовёт notify_all. Без этого поток прихода, припаркованный на «state != Maintenance» (при arrivals_continue=false), спал бы вечно (AtmEngine.cpp:164-170)."],
+  ["Бессрочное ТО: wait, а не wait_until(max)","warn","Для maintenanceDeadline_ == time_point::max() используется обычный wait() — потому что wait_until с max() переполняется на некоторых реализациях STL (AtmEngine.cpp:156-159)."],
+  ["Общий outMutex_ сериализует ВЕСЬ stdout","warn","outMutex_ живёт в LiveRenderer; поток отрисовки берёт его в paintFrame, а консоль — через outputMutex() для каждого вывода. Без него кадр и эхо/ответы консоли перемешались бы в кашу (LiveRenderer.cpp:273; AdminConsole.cpp:267,301)."],
+  ["Save/restore курсора вокруг кадра","good","paintFrame оборачивает вывод в ESC7/ESC8 и пишет только строки 1..height; строка ввода — height+2. Поэтому набираемый оператором текст не затирается перерисовкой (LiveRenderer.cpp:265,271)."],
+  ["Фиксированная высота дашборда (недавний фикс)","good","composeLines всегда выдаёт ровно queueVisible слотов очереди + строку переполнения (пустые, если не нужны). Иначе плавающая высота ломала раскладку: inputRow=height()+2 считается ОДИН раз, и хвост «команды:» налезал/дублировался при росте-сжатии очереди (LiveRenderer.cpp:185)."],
+  ["Сигналы через флаг + прерывание getline","warn","Хэндлер async-signal-safe: только g_shutdownFlag=1. На POSIX sigaction без SA_RESTART → блокирующий getline возвращает EINTR и консоль отдаёт управление; иначе флаг стоял бы, но цикл не заметил бы его до следующего Enter (Signals.cpp:24-34)."],
+  ["Порядок остановки: requestStop ПЕРЕД join","warn","requestStop() будит оба потока (Stopped+notify_all); только потом join(). Сделать join() первым — дедлок, потоки бы никогда не вышли (main.cpp:55-57)."],
+  ["История MSVC: почему базовые примитивы + чистый ребилд","warn","Связка jthread/stop_token/condition_variable_any/shared_mutex падала на MSVC. Отдельно: ninja не трекал заголовки → устаревшие .obj → ODR-краш «unlock of unowned mutex» только в live. Лечение — базовые примитивы + чистая пересборка (VSLANG=1033). Деструктор ~LiveRenderer сделан inline (COMDAT) против LNK2005."]
+];
+const BOTTLENECKS = [
+  ["Один mutex_ сериализует читателей с писателем","medium","Все снимки и оба писателя берут ОДИН std::mutex эксклюзивно (нет shared_mutex). Параллельные чтения сериализуются между собой и с потоками движка. Смягчено: критические секции коротки, а на время долгого обслуживания лок отпущен (AtmEngine.hpp:98)."],
+  ["Один поток обслуживания — потолок μ","high","Обслуживает только run(), по одному клиенту за раз (один кассир). Максимальная пропускная способность = 1/среднее_время. Когда λ приближается к μ, очередь растёт неограниченно. Это by design (одноканальная СМО), но это и есть главный «предел» (AtmEngine.cpp:190)."],
+  ["Неограниченный рост log_ / roster_","medium","Журнал операций и реестр клиентов только дополняются, никогда не обрезаются. Память растёт на весь прогон, а clientReport()/operations() линейно сканируют весь log_ (O(n) на запрос) (AtmEngine.cpp:257,470,486)."],
+  ["Полная пересборка кадра каждый тик","medium","paintFrame→composeLines перестраивает весь дашборд с нуля на каждом кадре, без диффинга; много std::string/ostringstream на кадр. Стоимость O(ширина×высота) вне зависимости от активности (LiveRenderer.cpp:263)."],
+  ["4 снимка на кадр — конкуренция за mutex движка","medium","composeLines зовёт snapshot/stats/queue/operations — каждый берёт mutex_ движка. При высоком refresh_hz поток отрисовки постоянно конкурирует с потоком обслуживания за этот лок (межподсистемная конкуренция) (LiveRenderer.cpp:102-107)."],
+  ["notify_all будит всех","low","Каждая команда/enqueue делает notify_all, а не notify_one — все спящие просыпаются и перепроверяют предикаты, даже если продвинуться может лишь один (эффект «громового стада»; на этом масштабе незаметно) (AtmEngine.cpp:118,300,320)."],
+  ["Нет обработки ресайза терминала","low","width_/termHeight_/height_ читаются один раз в конструкторе рендера. Ресайз окна на лету оставляет раскладку и inputRow устаревшими (осознанно отложено в v2) (LiveRenderer.cpp:83-86)."],
+  ["Латентность остановки ограничена getline","low","Главный поток сидит в блокирующем getline; пока он не вернётся (Enter/EOF/сигнал-EINTR), main не дойдёт до requestStop() (AdminConsole.cpp:226)."]
+];
+const REF = [
+  ["main()","src/main.cpp","Точка входа и владелец потоков: конфиг→логгер→движок→сигналы→2 потока→консоль→стоп→итоги"],
+  ["AtmEngine","src/engine/AtmEngine.cpp","Многопоточное ядро СМО: run() (писатель), generateArrivals() (продюсер), команды, снимки; один mutex_ + wakeUp_ + state_"],
+  ["Snapshots","include/atmsim/engine/Snapshots.hpp","DTO-структуры снимков: AtmSnapshot/StatsSnapshot/ClientSnapshot/OperationRecord/OperationFilter"],
+  ["ServiceTimeProvider","src/engine/ServiceTimeProvider.cpp","Распределения времени обслуживания (normal/uniform/exponential), отсечка min; μ = 1/среднее"],
+  ["ClientFactory","src/engine/ClientFactory.cpp","Пакетная генерация клиентов (для SimulationRunner/тестов); live-путь использует AtmEngine::makeClient"],
+  ["SimulationRunner","src/engine/SimulationRunner.cpp","Одно­поточная дискретно-событийная симуляция для тестов; не в live-приложении"],
+  ["applyOperation","src/core/Operation.cpp","Центр движения денег: счёт+касса вместе; статусы Success/InsufficientFunds/InsufficientCash/InvalidAmount"],
+  ["Account","src/core/Account.cpp","Счёт клиента: withdraw/deposit, «нельзя в минус» → InsufficientFunds"],
+  ["Cashbox","src/core/Cashbox.cpp","Касса: accept/dispense/canDispense; отдельная от счетов величина"],
+  ["Money","src/core/Money.cpp","Деньги = int64 минорных единиц; formatMoney ÷100 с 2 знаками; без float"],
+  ["Types","include/atmsim/core/Types.hpp","Перечисления: OperationType/AtmState/ClientState/OperationStatus; OperationOutcome; to_string"],
+  ["Client","include/atmsim/core/Client.hpp","Клиент: id, accountId, операция, сумма, терпение, время прихода, состояние"],
+  ["AdminConsole","src/console/AdminConsole.cpp","Контроллер UI (главный поток): командный режим + live-дашборд; читатель движка + команды"],
+  ["CommandParser","src/console/CommandParser.cpp","Строка → Command, без I/O; тестируется в изоляции"],
+  ["LiveRenderer","src/console/LiveRenderer.cpp","Живой дашборд (4-й поток): снимки → кадр; фиксированная высота; цвет кассы по направлению"],
+  ["Terminal + ansi::","src/console/Terminal.cpp","Платформенный слой: TTY, VT/UTF-8, размер; ansi:: escape-строки"],
+  ["Signals","src/console/Signals.cpp","SIGINT/SIGTERM: флаг + прерывание getline (POSIX без SA_RESTART)"],
+  ["ConfigLoader","src/config/ConfigLoader.cpp","Загрузка JSON (с комментариями), значения по умолчанию, validate()"],
+  ["Config","include/atmsim/config/Config.hpp","Структура настроек: atm/clients/service_time/maintenance/simulation/ui/logging"],
+  ["Logger","src/reporting/Logger.cpp","Уровневый технический лог в файл; потокобезопасен (mutex+flush)"],
+  ["CMakeLists","CMakeLists.txt","Граф целей: core→config/reporting→engine→console→atm_sim; atmsim_tests; C++20, /W4, потоки"],
+  ["tests/","tests/*.cpp","~57 юнит-тестов (simple_test.hpp): money/account/cashbox/operation/config/service_time/simulation/engine/parser/renderer/logger"]
+];
+
+/* ---------------- nav ---------------- */
+const nav=document.getElementById('nav');
+nav.addEventListener('click',e=>{const a=e.target.closest('a');if(!a)return;
+  document.querySelectorAll('.nav a').forEach(x=>x.classList.remove('active'));a.classList.add('active');
+  document.querySelectorAll('section').forEach(s=>s.classList.remove('on'));
+  document.getElementById(a.dataset.s).classList.add('on');
+  document.querySelector('.main').scrollTo(0,0);window.scrollTo(0,0);
+});
+/* theme */
+document.getElementById('themeBtn').onclick=()=>{const r=document.documentElement;r.dataset.theme=r.dataset.theme==='light'?'':'light';};
+
+/* generic diagram detail */
+function wireDiagram(svgId,detailId,data,fmt){
+  const svg=document.getElementById(svgId),det=document.getElementById(detailId);
+  svg.addEventListener('click',e=>{const n=e.target.closest('.node');if(!n)return;
+    const key=n.dataset.c||n.dataset.t||n.dataset.f||n.dataset.m;const d=data[key];if(!d)return;
+    svg.querySelectorAll('.node').forEach(x=>x.classList.remove('sel'));
+    svg.querySelectorAll('.node[data-'+attrOf(n)+'="'+key+'"]').forEach(x=>x.classList.add('sel'));
+    det.innerHTML=fmt(d);
+  });
+}
+function attrOf(n){return n.dataset.c!==undefined?'c':n.dataset.t!==undefined?'t':n.dataset.f!==undefined?'f':'m';}
+function list(arr){return '<ul class="tight">'+arr.map(x=>'<li>'+refify(esc(x))+'</li>').join('')+'</ul>';}
+function chips(arr){return '<div class="chiprow">'+arr.map(x=>'<span class="chip">'+esc(x)+'</span>').join('')+'</div>';}
+function esc(s){return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');}
+/* wrap file:line and code-ish tokens in .ref */
+function refify(s){return s.replace(/([\w./]+\.(?:cpp|hpp|json|txt)(?::\d+(?:-\d+)?)?)/g,'<span class="ref">$1</span>');}
+
+wireDiagram('archSvg','archDetail',ARCH,d=>`<h4>${esc(d.t)}</h4><p class="role">${esc(d.r)}</p>
+  <div class="kv"><b>Ключевые элементы</b>${list(d.keys)}<b>Вызывает</b>${chips(d.calls)}<b>Кто вызывает</b>${chips(d.by)}</div>`);
+wireDiagram('thrSvg','thrDetail',THREADS,d=>`<h4>${esc(d.t)}</h4><p class="role">${esc(d.r)}</p>
+  <div class="kv"><b>Что делает / особенности</b>${list(d.keys)}<b>Вызывает</b>${chips(d.calls)}<b>Запускается из</b>${chips(d.by)}</div>`);
+wireDiagram('fsmSvg','fsmDetail',FSM,d=>`<h4 style="color:${d.c}">${esc(d.t)}</h4><p class="role">${esc(d.d)}</p>
+  <div class="kv"><b>Переходы</b>${list(d.tr)}</div>`);
+wireDiagram('moneySvg','moneyDetail',MONEY,d=>`<h4>${esc(d.t)}</h4><p class="role">${esc(d.d)}</p>`);
+
+/* stepper */
+let si=0;const sList=document.getElementById('stepList'),sBody=document.getElementById('stepBody');
+STEPS.forEach((s,i)=>{const b=document.createElement('button');b.innerHTML='<span class="n">'+(i+1)+'</span>'+esc(s[0]);b.onclick=()=>{si=i;renderStep();};sList.appendChild(b);});
+function renderStep(){
+  sList.querySelectorAll('button').forEach((b,i)=>b.classList.toggle('active',i===si));
+  const s=STEPS[si];
+  sBody.innerHTML=`<div class="big">${si+1}<span style="font-size:18px;color:var(--fg3)"> / ${STEPS.length}</span></div>
+    <h4 style="margin:10px 0 8px;font-size:18px">${esc(s[0])}</h4><p class="lead">${refify(esc(s[1]))}</p>`;
+  const active=sList.querySelectorAll('button')[si];if(active)active.scrollIntoView({block:'nearest'});
+}
+document.getElementById('prevStep').onclick=()=>{si=(si-1+STEPS.length)%STEPS.length;renderStep();};
+document.getElementById('nextStep').onclick=()=>{si=(si+1)%STEPS.length;renderStep();};
+renderStep();
+
+/* rho calculator */
+const rate=document.getElementById('rate'),mean=document.getElementById('mean');
+function calc(){
+  const R=+rate.value,M=+mean.value;document.getElementById('vRate').textContent=R;document.getElementById('vMean').textContent=M;
+  const lambda=R/60, mu=1/M, rho=lambda/mu;
+  document.getElementById('rhoVal').textContent=rho.toFixed(2);
+  const grow=(lambda-mu);
+  document.getElementById('calcEq').innerHTML=
+    `λ = ${R}/60 = <b>${lambda.toFixed(3)}</b> клиента/с<br>`+
+    `μ = 1/${M} = <b>${mu.toFixed(3)}</b> обслуж./с<br>`+
+    `ρ = λ/μ = <b>${rho.toFixed(2)}</b>`;
+  const v=document.getElementById('verdict');const rv=document.getElementById('rhoVal');
+  if(rho<0.9){v.style.color=v.style.borderColor='var(--green)';v.style.background='rgba(62,207,142,.08)';rv.style.color='var(--green)';
+    v.innerHTML='Банкомат УСПЕВАЕТ. Очередь короткая, клиенты почти не ждут.';}
+  else if(rho<=1.05){v.style.color=v.style.borderColor='var(--yellow)';v.style.background='rgba(255,207,92,.08)';rv.style.color='var(--yellow)';
+    v.innerHTML='Пограничный режим (ρ≈1). Очередь «дышит», может подкапливаться.';}
+  else{v.style.color=v.style.borderColor='var(--red)';v.style.background='rgba(255,95,109,.08)';rv.style.color='var(--red)';
+    v.innerHTML=`Перегруз: очередь РАСТЁТ ≈ ${(grow*60).toFixed(0)} клиентов/мин (пока приход не иссякнет или клиенты не уйдут по терпению).`;}
+}
+rate.oninput=mean.oninput=calc;calc();
+
+/* critical & bottlenecks */
+const sevColor={high:'var(--red)',medium:'var(--yellow)',low:'var(--grey)'};
+const cmL=document.getElementById('cmList');
+CRITICAL.forEach(c=>{const badge=c[1]==='good'?'<span class="sev" style="background:rgba(62,207,142,.15);color:var(--green)">безопасность</span>':'<span class="sev" style="background:rgba(255,207,92,.15);color:var(--yellow)">важно</span>';
+  const d=document.createElement('details');d.className='cm';
+  d.innerHTML=`<summary><span>${esc(c[0])}</span>${badge}</summary><div class="body">${refify(esc(c[2]))}</div>`;cmL.appendChild(d);});
+const bnL=document.getElementById('bnList');
+BOTTLENECKS.forEach(b=>{const col=sevColor[b[1]];
+  const d=document.createElement('details');d.className='cm';
+  d.innerHTML=`<summary><span>${esc(b[0])}</span><span class="sev" style="background:${col}22;color:${col}">${b[1]}</span></summary><div class="body">${refify(esc(b[2]))}</div>`;bnL.appendChild(d);});
+
+/* reference table + search */
+const refBody=document.getElementById('refBody');
+function renderRef(q=''){q=q.toLowerCase();refBody.innerHTML=REF.filter(r=>(r[0]+r[1]+r[2]).toLowerCase().includes(q))
+  .map(r=>`<tr><td><b>${esc(r[0])}</b></td><td><span class="ref">${esc(r[1])}</span></td><td class="muted">${refify(esc(r[2]))}</td></tr>`).join('')
+  ||'<tr><td colspan="3" class="muted">Ничего не найдено</td></tr>';}
+document.getElementById('refSearch').oninput=e=>renderRef(e.target.value);
+renderRef();
+
+/* keyboard: arrows advance stepper when on startup */
+document.addEventListener('keydown',e=>{if(!document.getElementById('startup').classList.contains('on'))return;
+  if(e.key==='ArrowRight')document.getElementById('nextStep').click();
+  if(e.key==='ArrowLeft')document.getElementById('prevStep').click();});
+</script>
+</body>
+</html>

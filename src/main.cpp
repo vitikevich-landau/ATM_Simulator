@@ -21,7 +21,7 @@
 #include "atmsim/engine/AtmEngine.hpp"
 #include "atmsim/engine/ScopedEngineThreads.hpp"
 #include "atmsim/reporting/Logger.hpp"
-#include "utils/ru_console.hpp"
+#include "atmsim/utils/ru_console.hpp"
 
 using namespace atmsim;
 
