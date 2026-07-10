@@ -5,6 +5,7 @@
 #include <cmath>
 #include <iomanip>
 #include <iostream>
+#include <optional>
 #include <sstream>
 
 #include "atmsim/console/Terminal.hpp"
@@ -89,22 +90,41 @@ LiveRenderer::LiveRenderer(AtmEngine& engine, const Config& cfg, int forcedWidth
     width_ = std::clamp(forcedWidth > 0 ? forcedWidth : Terminal::width(), 60, 200);
     termHeight_ = std::clamp(forcedHeight > 0 ? forcedHeight : Terminal::height(), 16, 60);
 
-    // Сцена включается, только если она СО ВСЕЙ таблицей помещается в терминал.
-    // Бюджет тела (колонки очереди/статистики) в scene-режиме: высота терминала
-    // минус шапка (2), три разделителя (3), подвал (1), строка ввода с запасом
-    // (2) и сама сцена. Минимум 12 строк тела = очередь 4+5 служебных ИЛИ
-    // лента 3+9 служебных — меньше таблица теряет смысл. Не влезло — молча
-    // остаёмся в таблице: высота кадра постоянна в обоих случаях (§4.8.5).
+    // Сцена включается, только если она СО ВСЕЙ таблицей помещается в терминал
+    // (формула — в sceneFits; консоль проверяет её же перед scene on). Не
+    // влезло — молча остаёмся в таблице: высота кадра постоянна в обоих
+    // случаях (§4.8.5).
     sceneRows_ = std::clamp(cfg_.ui.sceneRows, scene::layout::kMinSceneRows,
                             scene::layout::kMaxSceneRows);
-    const int bodyBudget = termHeight_ - 8 - sceneRows_;
-    sceneActive_ = cfg_.ui.scene && width_ >= 84 && bodyBudget >= 12;
+    sceneActive_ = cfg_.ui.scene && sceneFits(cfg_, width_, termHeight_);
     if (sceneActive_) {
         presenter_ = std::make_unique<scene::ScenePresenter>(width_, sceneRows_,
                                                              cfg_.ui.sceneEffects);
     }
 
     height_ = static_cast<int>(composeLines().size());
+}
+
+bool LiveRenderer::sceneFits(const Config& cfg, int termWidth, int termHeight) {
+    // Те же клампы, что в конструкторе (уже приведённые значения проходят
+    // клампы без изменений). Бюджет тела таблицы в scene-режиме: высота
+    // терминала минус шапка (2), три разделителя (3), подвал (1), строка
+    // ввода с запасом (2) и сама сцена. Минимум 12 строк тела = очередь
+    // 4+5 служебных ИЛИ лента 3+9 служебных — меньше таблица теряет смысл.
+    const int w = std::clamp(termWidth > 0 ? termWidth : Terminal::width(), 60, 200);
+    const int h = std::clamp(termHeight > 0 ? termHeight : Terminal::height(), 16, 60);
+    const int rows = std::clamp(cfg.ui.sceneRows, scene::layout::kMinSceneRows,
+                                scene::layout::kMaxSceneRows);
+    return w >= 84 && (h - 8 - rows) >= 12;
+}
+
+int LiveRenderer::frameRate() const {
+    const int hz = std::clamp(cfg_.ui.refreshHz, 1, 60);
+    if (!sceneActive_) return hz;
+    // Со сценой кадры идут не реже scene_fps И не реже refresh_hz: дифф-рендер
+    // делает кадры без изменений бесплатными, зато снимки движка честно
+    // опрашиваются на refresh_hz (обещание конфига), а анимации — плавные.
+    return std::max(std::clamp(cfg_.ui.sceneFps, 5, 30), hz);
 }
 
 std::vector<std::string> LiveRenderer::composeLines() const {
@@ -169,8 +189,9 @@ std::vector<std::string> LiveRenderer::composeLinesFrom(
     // === Полноширинная шапка ===
     {
         std::ostringstream os;
+        // В шапке — фактическая частота КАДРОВ (со сценой она выше refresh_hz).
         os << C(ansi::bold()) << "ATM Simulator" << R()
-           << "   uptime " << hms(s.uptimeSeconds) << "   [LIVE " << cfg_.ui.refreshHz << " fps]";
+           << "   uptime " << hms(s.uptimeSeconds) << "   [LIVE " << frameRate() << " fps]";
         L.push_back(fit(os.str(), width_));
     }
     {
@@ -350,9 +371,11 @@ std::vector<std::string> LiveRenderer::composeLinesFrom(
         L.push_back(fit(C(ansi::green()) + "✓ Симуляция завершена" + R() + C(ansi::grey()) +
                         "  —  restart: новый прогон · stop: выход" + R(), width_));
     } else {
+        // Подвал держим <= ~95 колонок, чтобы на ходовой ширине 100 хвост с
+        // «live off · stop» не обрезался; полный список команд — в help.
         L.push_back(fit(C(ansi::grey()) +
-                        "команды: pause · resume · maintenance N|stop · client N · queue · "
-                        "stats · scene on|off · export F · live off · stop" + R(), width_));
+                        "команды: pause · resume · maintenance N|stop · queue · stats · "
+                        "scene · live off · stop · help" + R(), width_));
     }
 
     return L;
@@ -396,16 +419,18 @@ void LiveRenderer::paintFrame(const std::vector<std::string>& lines) {
 
 void LiveRenderer::renderLoop() {
     using clock = std::chrono::steady_clock;
-    // Разрешение таймера Windows -> 1 мс на время live-режима: иначе дедлайны
-    // кадров на 15 fps дрожат на штатной гранулярности ~15.6 мс (этап 0).
-    TimerResolutionGuard timerGuard;
+    // Разрешение таймера Windows -> 1 мс, но ТОЛЬКО при активной сцене: без
+    // неё кадры идут на refresh_hz (2-10), где штатной гранулярности ~15.6 мс
+    // хватает, а общесистемный 1-мс таймер зря ел бы батарею на долгих прогонах.
+    std::optional<TimerResolutionGuard> timerGuard;
+    if (sceneActive_) timerGuard.emplace();
 
     // Частоты РАЗДЕЛЕНЫ: снимки движка опрашиваются на refresh_hz (не грузим
     // его мьютексы чаще, чем осмысленно меняются данные), кадры рисуются на
-    // scene_fps из кэша — анимации между снимками остаются плавными. Без
+    // frameRate() из кэша — анимации между снимками остаются плавными. Без
     // сцены кадры и снимки идут на одной частоте, как раньше.
     const int hz = std::clamp(cfg_.ui.refreshHz, 1, 60);
-    const int fps = sceneActive_ ? std::clamp(cfg_.ui.sceneFps, 5, 30) : hz;
+    const int fps = frameRate();
     const auto framePeriod = std::chrono::microseconds(1'000'000 / fps);
     const auto snapPeriod = std::chrono::microseconds(1'000'000 / hz);
 
@@ -428,11 +453,13 @@ void LiveRenderer::renderLoop() {
                 cachedSnap_ = engine_.snapshot();
                 cachedStats_ = engine_.statsSnapshot();
                 cachedQueue_ = engine_.queueSnapshot();
-                // Один хвост ленты и для таблицы, и для судеб сцены: берём с
-                // запасом (не меньше 12 записей на грейс-логику презентера).
+                // Один хвост ленты и для таблицы, и для судеб сцены. Запас «не
+                // меньше 12 записей» нужен только грейс-логике презентера — без
+                // сцены берём ровно столько, сколько просит лента (в т.ч. 0).
+                const int feedWant = std::clamp(cfg_.ui.eventsTail, 0, 50);
                 OperationFilter f;
                 f.last = static_cast<std::size_t>(
-                    std::max(std::clamp(cfg_.ui.eventsTail, 0, 50), 12));
+                    presenter_ ? std::max(feedWant, 12) : feedWant);
                 cachedOps_ = engine_.operations(f);
                 lastSnap = nowTp;
             }

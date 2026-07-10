@@ -33,6 +33,7 @@ struct RunResult {
     AdminConsole::RunOutcome outcome;
     StatsSnapshot stats;
     AtmSnapshot atm;
+    UiConfig ui;  // ui-настройки после прогона (scene on|off переживает restart)
 };
 
 // Баннер при старте: имя/версия, путь конфига, число клиентов, файл лога.
@@ -88,7 +89,7 @@ RunResult runSingleSimulation(const Config& runCfg, Logger& logger) {
     }
 
     threads.stop();  // плавная остановка + join ДО снятия финальных снимков
-    return RunResult{outcome, engine.statsSnapshot(), engine.snapshot()};
+    return RunResult{outcome, engine.statsSnapshot(), engine.snapshot(), console.config().ui};
 }
 
 }  // namespace
@@ -115,12 +116,17 @@ int main(int argc, char** argv) {
 
         // Цикл прогонов: команда restart пересоздаёт движок «с нуля» с новым seed
         // (тот же seed дал бы идентичный прогон, §5). Выходим на Quit.
+        // ui-настройки, изменённые командами на лету (scene on|off), переносим
+        // из прогона в прогон — restart не должен молча откатывать их к файлу.
         auto seed = cfg.simulation.randomSeed;
+        UiConfig uiState = cfg.ui;
         for (int runIndex = 1; ; ++runIndex, ++seed) {
             Config runCfg = cfg;
             runCfg.simulation.randomSeed = seed;
+            runCfg.ui = uiState;
 
             const RunResult r = runSingleSimulation(runCfg, logger);
+            uiState = r.ui;
             logger.info("Итог прогона #" + std::to_string(runIndex) + ": обслужено " +
                         std::to_string(r.stats.served) + ", ушли " + std::to_string(r.stats.left));
 

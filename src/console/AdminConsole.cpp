@@ -528,6 +528,17 @@ AdminConsole::Next AdminConsole::runLiveSession() {
                 // (постоянная высота) действует В ПРЕДЕЛАХ сессии — здесь
                 // сессия легально завершается и начинается новая.
                 const bool want = c.onOff ? *c.onOff : !cfg_.ui.scene;
+                // Маленькое окно: честно отказываем ДО перезапуска, флаг не
+                // трогаем — иначе «сцена включена, но невидима», и голая
+                // команда scene дальше переключала бы невидимое состояние.
+                if (want && !cfg_.ui.scene && !LiveRenderer::sceneFits(cfg_)) {
+                    showOverlay(renderer, [] {
+                        std::cout << "Сцена не помещается: нужен терминал от ~84x30 "
+                                     "(рекомендовано 120x40).\n"
+                                     "Увеличьте окно и повторите scene on.\n";
+                    });
+                    break;
+                }
                 if (want != cfg_.ui.scene) {
                     cfg_.ui.scene = want;
                     result = Next::Live;
