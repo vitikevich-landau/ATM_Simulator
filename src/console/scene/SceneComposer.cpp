@@ -197,6 +197,9 @@ void composeScene(const SceneView& view, SceneCanvas& canvas) {
         canvas.text(a.x + 1 - (labelCols - 1) / 2, a.y + 3, a.label, a.labelTint);
         // Терпение на исходе — восклицательный знак над головой.
         if (a.nervous) canvas.put(a.x + 1, a.y - 1, U'!', Tint::Red, /*bold=*/true);
+        // Болтовня — пузырёк речи над говорящим (нервные не болтают, с «!» не
+        // конфликтует).
+        if (a.chatBubble != 0) canvas.put(a.x + 1, a.y - 1, a.chatBubble, Tint::Cyan);
         // Эффект: «пар» злости над уходящим не солоно хлебавши (мерцает в
         // такт шагам — фаза завязана на позицию).
         if (view.effectsEnabled && a.tint == Tint::Red && a.y != layout::kActorTopY &&

@@ -11,6 +11,12 @@ double personalPhase(ClientId id) {
     return static_cast<double>(splitmix64(static_cast<std::uint64_t>(id)) % 4000) / 1000.0;
 }
 
+// Расписание болтовни (см. chatState): окно эпизодов, длительность эпизода в
+// окне (остаток окна пара «молчит») и период смены говорящего.
+constexpr double kChatWindowSec = 9.0;
+constexpr double kChatSpanSec = 3.5;
+constexpr double kChatTurnSec = 1.7;
+
 }  // namespace
 
 std::uint64_t splitmix64(std::uint64_t x) {
@@ -44,6 +50,43 @@ ActorPose pickNervousPose(ClientId id, double tSec) {
     const double tp = tSec + personalPhase(id);
     return (static_cast<long long>(tp * 3.0) % 2 == 0) ? ActorPose::IdleShiftL
                                                        : ActorPose::IdleShiftR;
+}
+
+ChatRole chatState(ClientId left, ClientId right, double tSec) {
+    // Хэш пары: id соседей несимметрично перемешаны (пары (2,3) и (3,4) дают
+    // независимые расписания — эпизоды у цепочки соседей не синхронизируются).
+    const std::uint64_t pair =
+        splitmix64(splitmix64(static_cast<std::uint64_t>(left)) ^
+                   (static_cast<std::uint64_t>(right) * 0x9E3779B97F4A7C15ull));
+    // Личная фаза пары раскидывает окна разных пар по времени.
+    const double tp = tSec + static_cast<double>(pair % 9000) / 1000.0;
+    const std::uint64_t window = static_cast<std::uint64_t>(tp / kChatWindowSec);
+    const std::uint64_t luck = splitmix64(pair ^ (window * 0xBF58476D1CE4E5B9ull));
+    if (luck % 3 != 0) return ChatRole::None;                    // в этом окне молчат
+    const double inWindow = tp - static_cast<double>(window) * kChatWindowSec;
+    if (inWindow >= kChatSpanSec) return ChatRole::None;         // эпизод уже закончился
+    // Кто говорит: роли меняются каждые kChatTurnSec; кто начинает — тоже хэш.
+    const long long turn = static_cast<long long>(inWindow / kChatTurnSec) +
+                           static_cast<long long>((luck >> 8) % 2);
+    return (turn % 2 == 0) ? ChatRole::LeftSpeaks : ChatRole::RightSpeaks;
+}
+
+ActorPose pickChatPose(ClientId id, bool speaking, double tSec) {
+    const double tp = tSec + personalPhase(id);
+    if (speaking) {
+        // Жестикуляция: рука вверх-вниз ~2 Гц.
+        return (static_cast<long long>(tp * 2.0) % 2 == 0) ? ActorPose::Wave : ActorPose::Stand;
+    }
+    // Слушающий почти неподвижен, изредка переминается.
+    return (static_cast<long long>(tp / 2.2) % 4 == 1) ? ActorPose::IdleShiftL : ActorPose::Stand;
+}
+
+char32_t chatBubble(double tSec) {
+    switch (static_cast<long long>(tSec * 3.0) % 3) {
+        case 0: return U'·';
+        case 1: return U'○';
+        default: return U'●';
+    }
 }
 
 double walkSpeedFactor(ClientId id) {

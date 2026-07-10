@@ -300,3 +300,20 @@ TEST(scene_compose_approaching_keeps_free_screen) {
     CHECK(all.find("СВОБОДНО") != std::string::npos);
     CHECK(all.find("ОБСЛУЖИВАНИЕ") == std::string::npos);
 }
+
+// Пузырёк речи (болтовня в очереди) рисуется над головой говорящего.
+TEST(scene_compose_chat_bubble_over_speaker) {
+    SceneView v;
+    v.state = AtmState::Idle;
+    scene::SceneActorView a;
+    a.x = scene::layout::slotX(0);
+    a.y = scene::layout::kActorTopY;
+    a.pose = ActorPose::Wave;
+    a.label = "#2";
+    a.chatBubble = U'○';
+    v.actors.push_back(a);
+
+    SceneCanvas canvas(100, 10);
+    scene::composeScene(v, canvas);
+    CHECK(flatten(canvas).find("○") != std::string::npos);
+}

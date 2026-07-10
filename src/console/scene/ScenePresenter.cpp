@@ -340,6 +340,38 @@ void ScenePresenter::rebuildView(const AtmSnapshot& atm, const std::vector<Clien
         nervous[c.id] = total > 0.0 && (c.remainingPatience / total) < kNervousFrac;
     }
 
+    // Болтовня соседей по очереди: пары собираются по снимку очереди слева
+    // направо; болтают только оба СТОЯЩИЕ на своих слотах (QueueIdle, твины
+    // доиграны) и не нервничающие (им не до разговоров). Актёр участвует не
+    // больше чем в одной паре: сосед, уже занятый разговором слева, левым
+    // концом новой пары не становится. Расписание эпизодов — чистая функция
+    // времени и пары (ActorAnim::chatState), состояния нет: продвижение
+    // очереди переводит актёров в Advance и разрывает пару само.
+    struct ChatInfo {
+        bool speaking = false;
+        int lean = 0;  // сдвиг спрайта к собеседнику, клеток (визуальное сближение)
+    };
+    std::map<ClientId, ChatInfo> chat;
+    for (std::size_t i = 0; i + 1 < queue.size(); ++i) {
+        const ClientId leftId = queue[i].id;
+        const ClientId rightId = queue[i + 1].id;
+        if (chat.count(leftId) != 0) continue;  // левый уже болтает с предыдущим
+        const auto leftIt = actors_.find(leftId);
+        const auto rightIt = actors_.find(rightId);
+        if (leftIt == actors_.end() || rightIt == actors_.end()) continue;
+        const auto standing = [now](const Actor& a) {
+            return a.state == ActorState::QueueIdle && now >= a.tween.start + a.tween.dur;
+        };
+        if (!standing(leftIt->second) || !standing(rightIt->second)) continue;
+        if (nervous[leftId] || nervous[rightId]) continue;
+        const ChatRole role = chatState(leftId, rightId, now);
+        if (role == ChatRole::None) continue;
+        // Сближение: левый на клетку вправо, правый на две влево — между
+        // спрайтами (3 колонки, шаг слотов 7) остаётся зазор в одну колонку.
+        chat[leftId] = {role == ChatRole::LeftSpeaks, +1};
+        chat[rightId] = {role == ChatRole::RightSpeaks, -2};
+    }
+
     for (const auto& [id, a] : actors_) {
         SceneActorView av;
         const double x = posAt(a.tween, now);
@@ -393,6 +425,13 @@ void ScenePresenter::rebuildView(const AtmSnapshot& atm, const std::vector<Clien
                     av.pose = walkFrame;
                 } else if (nervous.count(id) != 0 && nervous[id]) {
                     av.pose = pickNervousPose(id, now);
+                } else if (chat.count(id) != 0) {
+                    // Болтовня: сближение к собеседнику, говорящий жестикулирует
+                    // и получает пузырёк речи над головой.
+                    const ChatInfo& ci = chat[id];
+                    av.x += ci.lean;
+                    av.pose = pickChatPose(id, ci.speaking, now);
+                    if (ci.speaking) av.chatBubble = chatBubble(now);
                 } else {
                     // Живая очередь: переминания и редкие взмахи, у каждого
                     // своя фаза (хэш от id, без RNG).

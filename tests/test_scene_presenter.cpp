@@ -116,7 +116,11 @@ TEST(presenter_advance_is_smooth) {
     CHECK(a3->x < layout::slotX(1));
     CHECK(a3->x > layout::slotX(0));
 
-    p.tick(serving(2), queueOf({3, 4}), 3.0);
+    // Точные слоты проверяем в момент, когда пара (3,4) НЕ болтает: болтовня
+    // (задача 3 сцены v2) визуально сближает стоящих соседей на клетку-две.
+    double settled = 3.0;
+    while (scene::chatState(3, 4, settled) != scene::ChatRole::None) settled += 0.5;
+    p.tick(serving(2), queueOf({3, 4}), settled);
     CHECK_EQ(findActor(p.view(), "#3")->x, layout::slotX(0));
     CHECK_EQ(findActor(p.view(), "#4")->x, layout::slotX(1));
     // #2 дошёл до банкомата.
@@ -515,4 +519,71 @@ TEST(presenter_walkin_speed_is_personal) {
         }
     }
     CHECK(fastArrivedAt > 0.0);  // быстрый дошёл в пределах прогона
+}
+
+// --- Болтовня соседей по очереди ----------------------------------------------
+
+// Расписание болтовни детерминировано; на длинном горизонте у пары есть и
+// молчание, и эпизоды, где говорят ОБА (роли чередуются каждые ~1.7 c).
+TEST(actor_anim_chat_schedule_is_deterministic_and_alternates) {
+    bool sawNone = false, sawLeft = false, sawRight = false;
+    for (double t = 0.0; t < 120.0; t += 0.25) {
+        const scene::ChatRole r = scene::chatState(2, 3, t);
+        CHECK(r == scene::chatState(2, 3, t));  // чистая функция времени
+        if (r == scene::ChatRole::None) sawNone = true;
+        if (r == scene::ChatRole::LeftSpeaks) sawLeft = true;
+        if (r == scene::ChatRole::RightSpeaks) sawRight = true;
+    }
+    CHECK(sawNone);
+    CHECK(sawLeft);
+    CHECK(sawRight);
+}
+
+// Скучающие соседи болтают: сближаются на клетку-две, ровно у одного из
+// собеседников (говорящего) пузырёк речи; вне эпизода стоят ровно по слотам.
+TEST(presenter_neighbors_chat_when_idle) {
+    ScenePresenter p(kW, kRows);
+    p.tick(serving(1), queueOf({2, 3}), 0.0);  // телепорт: все стоят по местам
+
+    bool sawChat = false;
+    for (double t = 0.5; t < 120.0; t += 0.5) {
+        p.tick(serving(1), queueOf({2, 3}), t);
+        const scene::SceneActorView* a2 = findActor(p.view(), "#2");
+        const scene::SceneActorView* a3 = findActor(p.view(), "#3");
+        const bool leaned =
+            a2->x == layout::slotX(0) + 1 && a3->x == layout::slotX(1) - 2;
+        if (!leaned) {
+            // Вне эпизода — ровно по слотам и без пузырьков.
+            CHECK_EQ(a2->x, layout::slotX(0));
+            CHECK_EQ(a3->x, layout::slotX(1));
+            CHECK(a2->chatBubble == 0);
+            CHECK(a3->chatBubble == 0);
+            continue;
+        }
+        if (!sawChat) {
+            sawChat = true;
+            const int bubbles = (a2->chatBubble != 0 ? 1 : 0) + (a3->chatBubble != 0 ? 1 : 0);
+            CHECK_EQ(bubbles, 1);
+        }
+    }
+    CHECK(sawChat);
+}
+
+// Нервные (терпение на исходе) в разговоры не вступают: ни сближения, ни
+// пузырьков — только переминание и бейдж «!».
+TEST(presenter_nervous_do_not_chat) {
+    ScenePresenter p(kW, kRows);
+    std::vector<ClientSnapshot> q = queueOf({2, 3});
+    for (ClientSnapshot& c : q) {
+        c.waitedSeconds = 95.0;      // осталось 5% терпения — ниже порога 15%
+        c.remainingPatience = 5.0;
+    }
+    p.tick(serving(1), q, 0.0);
+    for (double t = 0.5; t < 60.0; t += 0.5) {
+        p.tick(serving(1), q, t);
+        CHECK_EQ(findActor(p.view(), "#2")->x, layout::slotX(0));
+        CHECK_EQ(findActor(p.view(), "#3")->x, layout::slotX(1));
+        CHECK(findActor(p.view(), "#2")->chatBubble == 0);
+        CHECK(findActor(p.view(), "#3")->chatBubble == 0);
+    }
 }
