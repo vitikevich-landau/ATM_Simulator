@@ -18,6 +18,7 @@
 #include "atmsim/config/ConfigLoader.hpp"
 #include "atmsim/console/AdminConsole.hpp"
 #include "atmsim/console/Signals.hpp"
+#include "atmsim/console/SplashScreen.hpp"
 #include "atmsim/engine/AtmEngine.hpp"
 #include "atmsim/engine/ScopedEngineThreads.hpp"
 #include "atmsim/reporting/Logger.hpp"
@@ -76,6 +77,12 @@ void printFinalReport(const StatsSnapshot& st, const AtmSnapshot& s, const Confi
 // std::terminate на joinable-потоке. Финальные снимки снимаем ПОСЛЕ остановки —
 // для детерминированного итога при фиксированном seed (§5).
 RunResult runSingleSimulation(const Config& runCfg, Logger& logger) {
+    // Экран загрузки «самотест банкомата» — ДО создания движка и его потоков:
+    // симуляция (включая отсчёт аптайма и приход первого клиента с интервалом
+    // 0.0) начинается только после заставки, поэтому и при рестарте старт
+    // прогона виден с самого начала. Вне TTY заставки нет; клавиша пропускает.
+    showSplash(runCfg);
+
     AtmEngine engine(runCfg, &logger);
     ScopedEngineThreads threads(engine);  // спавн engine.run()/generateArrivals()
 

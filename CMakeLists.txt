@@ -110,6 +110,7 @@ add_library(atmsim_console
     src/console/FrameDiffer.cpp
     src/console/LiveRenderer.cpp
     src/console/Signals.cpp
+    src/console/SplashScreen.cpp
     src/console/AdminConsole.cpp
     src/console/scene/GlyphSet.cpp
     src/console/scene/SceneCanvas.cpp
@@ -165,6 +166,7 @@ if(ATMSIM_BUILD_TESTS)
         tests/test_scene_compose.cpp
         tests/test_scene_presenter.cpp
         tests/test_frame_differ.cpp
+        tests/test_splash.cpp
         tests/test_logger.cpp)
     target_include_directories(atmsim_tests PRIVATE tests)
     target_link_libraries(atmsim_tests PRIVATE atmsim_console)
