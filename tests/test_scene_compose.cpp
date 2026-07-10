@@ -280,3 +280,23 @@ TEST(scene_compose_effects_layer) {
         CHECK(quietRow[static_cast<std::size_t>(x)] != U'=');
     }
 }
+
+// Во время ПОДХОДА (walk_seconds) экран банкомата остаётся «СВОБОДНО»: клиент
+// ещё идёт, обслуживание не началось — «ОБСЛУЖИВАНИЕ» на экране рядом с
+// идущим к банкомату человечком было бы враньём.
+TEST(scene_compose_approaching_keeps_free_screen) {
+    AtmSnapshot atm;
+    atm.state = AtmState::Serving;
+    atm.currentClientId = 7;
+    atm.currentOperation = OperationType::Withdraw;
+    atm.approaching = true;
+    atm.approachProgress = 0.4;
+    atm.approachPlannedModelSec = 2.0;
+
+    const int width = 100;
+    SceneCanvas canvas(width, 10);
+    scene::composeScene(scene::buildSceneView(atm, {}, width), canvas);
+    const std::string all = flatten(canvas);
+    CHECK(all.find("СВОБОДНО") != std::string::npos);
+    CHECK(all.find("ОБСЛУЖИВАНИЕ") == std::string::npos);
+}

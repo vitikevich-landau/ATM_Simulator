@@ -48,8 +48,12 @@ class ScenePresenter {
 public:
     // canvasWidth/sceneRows — размеры сценической полосы (фиксированы на
     // всю live-сессию, как и у LiveRenderer); effects — ui.scene_effects
-    // (спиннер связи с банком, купюры, «пар» злости).
-    explicit ScenePresenter(int canvasWidth, int sceneRows, bool effects = true);
+    // (спиннер связи с банком, купюры, «пар» злости); timeScale —
+    // cfg.simulation.time_scale: переводит модельные секунды ПОДХОДА из
+    // снимка в реальные секунды твина (подход — единственное движение сцены,
+    // темп которого задаёт движок, а не константы презентера).
+    explicit ScenePresenter(int canvasWidth, int sceneRows, bool effects = true,
+                            double timeScale = 1.0);
 
     // Согласовать реестр актёров со снимками движка и продвинуть анимации к
     // моменту nowSec. Зовётся один раз на кадр ПЕРЕД composeLines().
@@ -107,6 +111,12 @@ private:
     // Перенаправить актёра к цели targetX: новый твин из ТЕКУЩЕЙ точки с
     // catch-up скоростью; телепорт при дистанции больше полусцены.
     void retarget(Actor& a, double targetX, double now) const;
+    // Ведение ПОДХОДА к банкомату (walk_seconds): цель и срок задаёт снимок
+    // движка (remainRealSec — сколько реальных секунд осталось идти), а не
+    // константная скорость сцены; paused — подход заморожен, актёр замирает
+    // на месте (движение подхода — смысловое, на паузе живёт только косметика).
+    void approachRetarget(Actor& a, double targetX, double remainRealSec, bool paused,
+                          double now) const;
     // Отправить актёра к правому краю по дорожке выхода с настроением mood.
     void beginLeave(Actor& a, ActorState mood, double now) const;
     void rebuildView(const AtmSnapshot& atm, const std::vector<ClientSnapshot>& queue,
@@ -116,6 +126,7 @@ private:
     int sceneRows_;
     int exitLaneY_;                    // дорожка выхода (нижние строки сцены)
     bool effects_;                     // ui.scene_effects
+    double timeScale_;                 // cfg.simulation.time_scale (для подхода)
     bool teleportNext_ = true;         // первый tick всегда расставляет мгновенно
     bool ticked_ = false;
 

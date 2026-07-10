@@ -47,6 +47,13 @@ void validate(const Config& c) {
         c.clients.patienceSeconds.min > c.clients.patienceSeconds.max) {
         throw ConfigError("некорректный patience_seconds (нужно 0 <= min <= max)");
     }
+    // Время подхода уходит в uniform_real_distribution(min, max), precondition
+    // которого — min <= max; отрицательное время бессмысленно. 0/0 — легальное
+    // «подход мгновенный» (поведение до фичи подхода).
+    if (c.clients.walkSeconds.min < 0.0 ||
+        c.clients.walkSeconds.min > c.clients.walkSeconds.max) {
+        throw ConfigError("некорректный walk_seconds (нужно 0 <= min <= max)");
+    }
     if (c.clients.arrivalRatePerMinute <= 0.0) {
         throw ConfigError("arrival_rate_per_minute должен быть больше нуля");
     }
@@ -181,6 +188,11 @@ Config ConfigLoader::loadFromString(const std::string& jsonText) {
                 const auto& r = cl.at("patience_seconds");
                 c.clients.patienceSeconds.min = r.value("min", c.clients.patienceSeconds.min);
                 c.clients.patienceSeconds.max = r.value("max", c.clients.patienceSeconds.max);
+            }
+            if (cl.contains("walk_seconds")) {
+                const auto& r = cl.at("walk_seconds");
+                c.clients.walkSeconds.min = r.value("min", c.clients.walkSeconds.min);
+                c.clients.walkSeconds.max = r.value("max", c.clients.walkSeconds.max);
             }
         }
 

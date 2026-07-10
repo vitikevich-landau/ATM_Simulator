@@ -67,6 +67,9 @@ struct SceneView {
     AtmState state = AtmState::Idle;
     std::optional<ServiceStage> stage;
     double progress = 0.0;                // доля обслуживания 0..1
+    // Клиент взят из очереди, но ещё ИДЁТ к банкомату (walk_seconds): экран
+    // показывает «СВОБОДНО», как настоящему подходящему человеку.
+    bool approaching = false;
     bool lowCash = false;
     bool maintenancePending = false;
     double maintenanceEtaSeconds = 0.0;   // <0 — ТО до stop, >0 — остаток

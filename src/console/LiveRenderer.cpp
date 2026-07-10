@@ -99,7 +99,8 @@ LiveRenderer::LiveRenderer(AtmEngine& engine, const Config& cfg, int forcedWidth
     sceneActive_ = cfg_.ui.scene && sceneFits(cfg_, width_, termHeight_);
     if (sceneActive_) {
         presenter_ = std::make_unique<scene::ScenePresenter>(width_, sceneRows_,
-                                                             cfg_.ui.sceneEffects);
+                                                             cfg_.ui.sceneEffects,
+                                                             cfg_.simulation.timeScale);
     }
 
     height_ = static_cast<int>(composeLines().size());
@@ -263,9 +264,17 @@ std::vector<std::string> LiveRenderer::composeLinesFrom(
     // Строка «что делает клиент» (§4.8): тематический этап обслуживания и доля
     // отработанного времени. Пока никого не обслуживают, строка пуста — она
     // ВСЕГДА занимает ровно один слот, чтобы высота кадра не плавала (§4.8.5).
+    // Во время ПОДХОДА (clients.walk_seconds) этапа ещё нет — в том же слоте
+    // показываем путь клиента к банкомату с его собственным прогрессом.
     {
         std::ostringstream os;
-        if (s.currentClientId && s.currentStage) {
+        if (s.currentClientId && s.approaching) {
+            os << " └ " << C(ansi::cyan()) << "подходит к банкомату" << R() << ' ';
+            if (cfg_.ui.showProgressBars) {
+                os << '[' << C(ansi::cyan()) << bar(s.approachProgress, 10) << R() << "] ";
+            }
+            os << static_cast<int>(std::lround(s.approachProgress * 100.0)) << '%';
+        } else if (s.currentClientId && s.currentStage) {
             os << " └ " << C(ansi::cyan()) << to_string(*s.currentStage) << R() << ' ';
             // Полоса прогресса обслуживания — как и остальные полосы, только
             // при ui.show_progress_bars; процент показываем всегда.

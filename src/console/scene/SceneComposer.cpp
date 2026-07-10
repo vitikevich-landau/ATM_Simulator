@@ -45,6 +45,10 @@ struct ScreenContent {
 ScreenContent screenContent(const SceneView& v) {
     switch (v.state) {
         case AtmState::Serving:
+            // Клиент ещё только ИДЁТ к банкомату (walk_seconds): для подходящего
+            // человека экран пока «СВОБОДНО» — переключится, когда тот вставит
+            // карту (начнётся первый этап обслуживания).
+            if (v.approaching) break;
             if (v.stage) {
                 const std::array<std::string, 2> t = screenStageText(*v.stage);
                 return {{t[0], t[1], screenProgressLine(v.progress)}, Tint::Cyan};
@@ -73,6 +77,7 @@ void fillAtmState(SceneView& view, const AtmSnapshot& atm) {
     view.state = atm.state;
     view.stage = atm.currentStage;
     view.progress = atm.serviceProgress;
+    view.approaching = atm.approaching;
     view.lowCash = atm.lowCash;
     view.maintenancePending = atm.maintenancePending;
     view.maintenanceEtaSeconds = atm.maintenanceEtaSeconds;

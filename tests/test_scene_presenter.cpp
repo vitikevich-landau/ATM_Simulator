@@ -352,3 +352,116 @@ TEST(actor_anim_act_poses_by_stage) {
               ActorPose::ReachLeft);
     }
 }
+
+// --- Подход к банкомату (walk_seconds): темп движения задаёт движок ----------
+
+namespace {
+
+// Снимок «клиент взят из очереди и ИДЁТ к банкомату» (этапа ещё нет).
+AtmSnapshot approachingTo(ClientId id, double progress, double plannedModelSec) {
+    AtmSnapshot s = serving(id);
+    s.approaching = true;
+    s.approachProgress = progress;
+    s.approachPlannedModelSec = plannedModelSec;
+    return s;
+}
+
+}  // namespace
+
+// Клиент из головы очереди идёт к банкомату РОВНО срок подхода из снимка (а не
+// константной скоростью сцены) и не подсвечивается как «обслуживаемый»
+// (AtAtm, голубой), пока подход не завершён — даже если твин уже добежал.
+TEST(presenter_approach_follows_engine_schedule) {
+    ScenePresenter p(kW, kRows);
+    p.tick(serving(1), queueOf({2}), 0.0);  // телепорт-кадр: #2 в слоте 0
+
+    // #1 ушёл; #2 взят из очереди и подходит: 2 модельные секунды пути
+    // (базовой скоростью сцены он дошёл бы от слота 0 за ~0.8 c).
+    p.tick(approachingTo(2, 0.0, 2.0), {}, 1.0);
+    p.tick(approachingTo(2, 0.5, 2.0), {}, 2.0);   // середина срока
+    const scene::SceneActorView* mid = findActor(p.view(), "#2");
+    CHECK(mid != nullptr);
+    CHECK(mid->x > layout::kServeX);               // ещё в пути
+    CHECK(mid->x < layout::slotX(0));
+    CHECK(mid->tint != scene::Tint::Cyan);         // не «обслуживается»
+
+    // Подход завершён по движку, но обслуживание не началось: актёр у
+    // банкомата, но без подсветки обслуживания — стоит и ждёт.
+    p.tick(approachingTo(2, 1.0, 2.0), {}, 3.1);
+    const scene::SceneActorView* arrived = findActor(p.view(), "#2");
+    CHECK_EQ(arrived->x, layout::kServeX);
+    CHECK(arrived->tint != scene::Tint::Cyan);
+
+    // Обслуживание началось (подход погашен, появился этап) — теперь AtAtm.
+    AtmSnapshot srv = serving(2);
+    srv.currentStage = ServiceStage::InsertCard;
+    srv.serviceProgress = 0.05;
+    p.tick(srv, {}, 3.3);
+    const scene::SceneActorView* atAtm = findActor(p.view(), "#2");
+    CHECK_EQ(atAtm->x, layout::kServeX);
+    CHECK(atAtm->tint == scene::Tint::Cyan);
+}
+
+// Очередь была пуста: новый клиент входит с правого края и идёт к терминалу в
+// срок движка — БЕЗ потолка kWalkInMaxSec (синхронизация с движком важнее
+// темпа входа: обычный walk-in дошёл бы максимум за 1.2 c).
+TEST(presenter_approach_spawn_walks_from_edge_on_schedule) {
+    ScenePresenter p(kW, kRows);
+    p.tick(AtmSnapshot{}, {}, 0.0);               // телепорт-кадр: сцена пуста
+
+    p.tick(approachingTo(9, 0.0, 3.0), {}, 1.0);  // 3 c пути от края
+    const scene::SceneActorView* spawned = findActor(p.view(), "#9");
+    CHECK(spawned != nullptr);
+    const int spawnX = spawned->x;
+    CHECK(spawnX > layout::kServeX + 40);          // ещё далеко справа
+
+    p.tick(approachingTo(9, 0.5, 3.0), {}, 2.5);   // середина срока
+    const int midX = findActor(p.view(), "#9")->x;
+    CHECK(midX < spawnX);                          // движется к банкомату
+    CHECK(midX > layout::kServeX + 20);            // но потолок 1.2 c уже позади
+
+    p.tick(approachingTo(9, 1.0, 3.0), {}, 4.1);   // дошёл точно в срок
+    CHECK_EQ(findActor(p.view(), "#9")->x, layout::kServeX);
+}
+
+// Пауза замораживает подход (движение — смысловое, §4.6): актёр замирает на
+// месте, после resume дорабатывает остаток пути в срок движка.
+TEST(presenter_approach_freezes_on_pause) {
+    ScenePresenter p(kW, kRows);
+    p.tick(AtmSnapshot{}, {}, 0.0);               // телепорт-кадр: сцена пуста
+
+    p.tick(approachingTo(5, 0.0, 4.0), {}, 1.0);  // идёт: 4 c пути
+
+    AtmSnapshot paused = approachingTo(5, 0.25, 4.0);
+    paused.state = AtmState::Paused;
+    p.tick(paused, {}, 2.0);
+    const int frozenX = findActor(p.view(), "#5")->x;
+    p.tick(paused, {}, 2.7);
+    CHECK_EQ(findActor(p.view(), "#5")->x, frozenX);  // стоит на месте
+
+    // Resume: остаток пути проходит за остаток срока движка.
+    p.tick(approachingTo(5, 0.25, 4.0), {}, 3.0);
+    p.tick(approachingTo(5, 0.5, 4.0), {}, 5.0);
+    const int resumedX = findActor(p.view(), "#5")->x;
+    CHECK(resumedX < frozenX);                     // снова движется к банкомату
+    CHECK(resumedX > layout::kServeX);
+    p.tick(approachingTo(5, 1.0, 4.0), {}, 7.2);
+    CHECK_EQ(findActor(p.view(), "#5")->x, layout::kServeX);
+}
+
+// Телепорт-режим (первый кадр live-сессии, resume) ставит ПОДХОДЯЩЕГО не к
+// банкомату, а на его истинную точку пути по прогрессу из снимка: «уже стоит
+// у терминала», когда таблица пишет «подходит», — враньё.
+TEST(presenter_teleport_places_approaching_on_path) {
+    ScenePresenter p(kW, kRows);
+    p.tick(approachingTo(3, 0.5, 2.0), {}, 0.0);  // первый tick — телепорт
+    const scene::SceneActorView* a = findActor(p.view(), "#3");
+    CHECK(a != nullptr);
+    CHECK(a->x > layout::kServeX + 10);            // не у банкомата
+    CHECK(a->x < kW - 12);                         // и не у края — на полпути
+
+    // Дошагивает остаток в срок движка и ждёт начала обслуживания.
+    p.tick(approachingTo(3, 1.0, 2.0), {}, 1.1);
+    CHECK_EQ(findActor(p.view(), "#3")->x, layout::kServeX);
+    CHECK(findActor(p.view(), "#3")->tint != scene::Tint::Cyan);
+}

@@ -77,7 +77,14 @@ void AdminConsole::printStatus() const {
         // lround, как на дашборде (LiveRenderer), чтобы два представления
         // одного прогресса не расходились на 1%. Секунды — модельные, как и
         // все времена наружу (§4.7): отработано = доля * полная длительность.
-        if (s.currentStage) {
+        if (s.approaching) {
+            // Подход (clients.walk_seconds): клиент взят из очереди, но ещё
+            // идёт к терминалу — обслуживание не началось.
+            std::cout << "Сейчас:           подходит к банкомату"
+                      << " (" << std::lround(s.approachProgress * 100.0) << "%, "
+                      << static_cast<long>(s.approachProgress * s.approachPlannedModelSec)
+                      << " c из " << static_cast<long>(s.approachPlannedModelSec) << " c)\n";
+        } else if (s.currentStage) {
             std::cout << "Сейчас:           " << to_string(*s.currentStage)
                       << " (" << std::lround(s.serviceProgress * 100.0) << "%, "
                       << static_cast<long>(s.serviceProgress * s.servicePlannedModelSec)

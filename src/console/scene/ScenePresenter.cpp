@@ -30,6 +30,12 @@ constexpr double kArriveEps = 0.5;
 // ленте операций (запись могла ещё не попасть в хвост к моменту снимка).
 constexpr int kFateGraceTicks = 2;
 
+// Допустимое расхождение твина подхода с оставшимся временем подхода из
+// снимка, сек. Снимки опрашиваются реже кадров (refresh_hz), поэтому мелкий
+// дрейф — норма (пересинхронизация на каждый тик дёргала бы актёра); большой
+// (пауза/резюме, задержка опроса) — повод перестроить твин из текущей точки.
+constexpr double kApproachResyncSec = 0.35;
+
 // Доля оставшегося терпения, ниже которой клиент «нервничает» (переступает
 // с ноги на ногу и получает бейдж «!»). Порог тот же, что красит полосу
 // терпения в таблице красным.
@@ -49,13 +55,16 @@ Fate lookupFate(const std::vector<OperationRecord>& opsTail, ClientId id) {
 
 }  // namespace
 
-ScenePresenter::ScenePresenter(int canvasWidth, int sceneRows, bool effects)
+ScenePresenter::ScenePresenter(int canvasWidth, int sceneRows, bool effects, double timeScale)
     : width_(canvasWidth),
       sceneRows_(sceneRows),
       // Дорожка выхода — три нижние строки сцены (спрайт высотой 3): уходящие
       // не толкутся на линии очереди, а «проходят перед камерой» внизу.
       exitLaneY_(sceneRows - 3),
-      effects_(effects) {}
+      effects_(effects),
+      // Конфиг гарантирует time_scale > 0 (ConfigLoader), но презентер зовут и
+      // тесты с голыми числами — страхуемся от деления на ноль.
+      timeScale_(timeScale > 0.0 ? timeScale : 1.0) {}
 
 double ScenePresenter::posAt(const Tween& t, double now) {
     if (t.dur <= 0.0) return t.toX;
@@ -86,6 +95,30 @@ void ScenePresenter::retarget(Actor& a, double targetX, double now) const {
     a.tween = {cur, targetX, now, dist / speed};
 }
 
+void ScenePresenter::approachRetarget(Actor& a, double targetX, double remainRealSec,
+                                      bool paused, double now) const {
+    const double cur = posAt(a.tween, now);
+    if (paused) {
+        // Пауза замораживает подход в движке — актёр замирает на месте (после
+        // resume снимок даст свежий остаток пути, и твин перестроится ниже).
+        a.tween = {cur, cur, now, 0.0};
+        return;
+    }
+    const bool newTarget = std::abs(targetX - a.tween.toX) > 1e-9;
+    const double tweenRemain = std::max(0.0, a.tween.start + a.tween.dur - now);
+    if (!newTarget && std::abs(tweenRemain - remainRealSec) <= kApproachResyncSec) {
+        return;  // твин идёт в ногу со снимком — не дёргаем
+    }
+    if (std::abs(targetX - cur) < kArriveEps) {
+        a.tween = {targetX, targetX, now, 0.0};
+        return;
+    }
+    // Дорабатываем путь из текущей точки ровно за срок движка: момент «дошёл»
+    // и момент старта обслуживания совпадают с точностью до опроса снимков.
+    a.tween = {cur, targetX, now, std::max(remainRealSec, 0.0)};
+    if (a.state != ActorState::WalkIn) a.state = ActorState::Advance;
+}
+
 void ScenePresenter::beginLeave(Actor& a, ActorState mood, double now) const {
     a.state = mood;
     a.y = exitLaneY_;
@@ -108,6 +141,14 @@ void ScenePresenter::tick(const AtmSnapshot& atm, const std::vector<ClientSnapsh
     if (atm.currentClientId) {
         targets[*atm.currentClientId] = {static_cast<double>(layout::kServeX), true, false};
     }
+    // ПОДХОД к банкомату (walk_seconds): движение подходящего — смысловое, его
+    // темп задаёт снимок движка, а не константы сцены. remainReal — сколько
+    // РЕАЛЬНЫХ секунд осталось идти по данным снимка (модельные секунды из
+    // снимка делятся на time_scale).
+    const bool approaching = atm.approaching && atm.currentClientId.has_value();
+    const double approachRemainReal =
+        approaching ? (1.0 - atm.approachProgress) * atm.approachPlannedModelSec / timeScale_
+                    : 0.0;
     const int slots = layout::visibleSlots(width_);
     for (std::size_t i = 0; i < queue.size(); ++i) {
         // Обслуживаемый не может одновременно стоять в очереди, но на всякий
@@ -180,14 +221,31 @@ void ScenePresenter::tick(const AtmSnapshot& atm, const std::vector<ClientSnapsh
 
         a.serving = found->second.serving;
         const double targetX = found->second.x;
+        const bool actorApproaching = a.serving && approaching;
         if (teleportNext_) {
-            a.tween = {targetX, targetX, nowSec, 0.0};
+            if (actorApproaching) {
+                // Телепорт-режим, но подход — смысловое состояние: ставим
+                // актёра на его ИСТИННУЮ точку пути (по прогрессу из снимка)
+                // и даём дойти в срок движка. «Стоит у банкомата, но таблица
+                // пишет „подходит“» выглядело бы враньём.
+                const double spawnX = static_cast<double>(width_) - 2.0;
+                const double xNow = targetX + (spawnX - targetX) * (1.0 - atm.approachProgress);
+                a.tween = {xNow, targetX, nowSec, std::max(approachRemainReal, 0.0)};
+                a.state = ActorState::Advance;
+            } else {
+                a.tween = {targetX, targetX, nowSec, 0.0};
+            }
+        } else if (actorApproaching) {
+            approachRetarget(a, targetX, approachRemainReal,
+                             atm.state == AtmState::Paused, nowSec);
         } else if (std::abs(targetX - a.tween.toX) > 1e-9) {
             retarget(a, targetX, nowSec);
             if (a.state != ActorState::WalkIn) a.state = ActorState::Advance;
         }
-        // Прибытие фиксируем стадией «на месте».
-        if (nowSec >= a.tween.start + a.tween.dur) {
+        // Прибытие фиксируем стадией «на месте». Подходящий не становится
+        // AtAtm, даже если его твин уже добежал (дрейф опроса снимков):
+        // обслуживание ещё не началось — он стоит у терминала и ждёт.
+        if (nowSec >= a.tween.start + a.tween.dur && !actorApproaching) {
             a.state = a.serving ? ActorState::AtAtm : ActorState::QueueIdle;
         }
         ++it;
@@ -200,13 +258,28 @@ void ScenePresenter::tick(const AtmSnapshot& atm, const std::vector<ClientSnapsh
         a.id = id;
         a.serving = t.serving;
         a.stateSince = nowSec;
+        const bool spawnApproaching = t.serving && approaching;
         if (teleportNext_) {
-            a.tween = {t.x, t.x, nowSec, 0.0};
-            a.state = t.serving ? ActorState::AtAtm : ActorState::QueueIdle;
+            if (spawnApproaching) {
+                // См. телепорт-ветку обхода реестра: подходящего ставим на его
+                // истинную точку пути и даём дойти в срок движка.
+                const double spawnX = static_cast<double>(width_) - 2.0;
+                const double xNow = t.x + (spawnX - t.x) * (1.0 - atm.approachProgress);
+                a.tween = {xNow, t.x, nowSec, std::max(approachRemainReal, 0.0)};
+                a.state = ActorState::WalkIn;
+            } else {
+                a.tween = {t.x, t.x, nowSec, 0.0};
+                a.state = t.serving ? ActorState::AtAtm : ActorState::QueueIdle;
+            }
         } else {
             const double spawnX = static_cast<double>(width_) - 2.0;
             const double dist = std::abs(spawnX - t.x);
-            a.tween = {spawnX, t.x, nowSec, std::min(dist / kWalkSpeed, kWalkInMaxSec)};
+            // Подходящий (очередь была пуста, клиент идёт с «улицы» прямо к
+            // терминалу) идёт в срок движка — без потолка kWalkInMaxSec:
+            // синхронизация с движком важнее темпа входа.
+            const double dur = spawnApproaching ? std::max(approachRemainReal, 0.0)
+                                                : std::min(dist / kWalkSpeed, kWalkInMaxSec);
+            a.tween = {spawnX, t.x, nowSec, dur};
             a.state = ActorState::WalkIn;
         }
         actors_.emplace(id, a);

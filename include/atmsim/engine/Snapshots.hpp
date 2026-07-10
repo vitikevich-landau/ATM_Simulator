@@ -33,6 +33,16 @@ struct AtmSnapshot {
     std::optional<ServiceStage> currentStage;
     double serviceProgress{0.0};                      // отработанная доля, 0..1
     double servicePlannedModelSec{0.0};               // полная длительность (модельные сек.)
+    // ПОДХОД к банкомату (clients.walk_seconds): клиент уже взят из очереди,
+    // но ещё ИДЁТ к терминалу — обслуживание не началось (currentStage пуст,
+    // serviceProgress нулевой). approaching = true только в этой фазе; прогресс
+    // подхода растёт 0..1 непрерывно (та же механика слайсов, что у прогресса
+    // обслуживания) и на паузе замирает (§4.6). Сцена ведёт координату
+    // подходящего актёра от этого прогресса — так момент «дошёл» и момент
+    // старта обслуживания совпадают по построению.
+    bool approaching{false};
+    double approachProgress{0.0};                     // пройденная доля пути, 0..1
+    double approachPlannedModelSec{0.0};              // полное время подхода (модельные сек.)
     std::uint64_t totalServed{0};
     std::uint64_t totalLeft{0};                       // ушли по терпению
     std::size_t queueLength{0};

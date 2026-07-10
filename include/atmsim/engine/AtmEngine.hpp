@@ -100,6 +100,17 @@ private:
     // Перевести банкомат в ТО. Вызывается ПОД mutex_: сразу, если клиентов нет
     // на обслуживании, либо после доработки текущего клиента.
     void beginMaintenanceLocked(std::optional<int> durationSeconds);
+    // «Занятое» прерываемое ожидание realDurationSec ЧИСТОГО времени работы
+    // (сердце §6.2, общее для подхода и обслуживания): на паузе честно замирает
+    // (слайс закрыт — прогресс для снимков заморожен), просыпается на дедлайны
+    // терпения (перетерпевшие выкидываются из очереди), прерывается остановкой.
+    // Прогресс публикуется в пару (servedRealSecOut, sliceStartOut) — snapshot()
+    // читает её под тем же mutex_. Вызывается из run() ПОД уже захваченным
+    // lock; возвращает чистое отработанное реальное время (== realDurationSec
+    // при штатном завершении, меньше — если прервались остановкой).
+    double busyWaitLocked(std::unique_lock<std::mutex>& lock, double realDurationSec,
+                          double& servedRealSecOut,
+                          std::optional<std::chrono::steady_clock::time_point>& sliceStartOut);
     // Решение «уйти/остаться» для всех в очереди при старте ТО (§4.5). Вызывается
     // из потока обслуживания, ПОД уже захваченным mutex_ (потому «Locked»).
     void applyMaintenanceRenegingLocked();
@@ -160,6 +171,13 @@ private:
     double servicePlannedModelSec_{0.0};  // полная длительность (модельные сек.)
     double serviceServedRealSec_{0.0};    // чистое реальное время ДО текущего слайса
     std::optional<std::chrono::steady_clock::time_point> serviceSliceStart_;  // начало слайса
+    // Прогресс ПОДХОДА к банкомату (clients.walk_seconds) — та же механика
+    // слайсов, что у прогресса обслуживания выше, но своя тройка полей: фазы
+    // строго последовательны (сначала подход, потом обслуживание), и снимок
+    // различает их по тому, какой planned сейчас ненулевой.
+    double approachPlannedModelSec_{0.0};  // полное время подхода (модельные сек.)
+    double approachServedRealSec_{0.0};    // чистое реальное время ДО текущего слайса
+    std::optional<std::chrono::steady_clock::time_point> approachSliceStart_;
     std::optional<OperationType> lastCashMove_;  // направление посл. движения кассы
     std::uint64_t totalServed_{0};
     std::uint64_t totalLeft_{0};              // всего ушли (терпение + ТО)
