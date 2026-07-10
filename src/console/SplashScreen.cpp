@@ -77,11 +77,19 @@ void showSplash(const Config& cfg) {
     // имеет смысла и только сорила бы ANSI-кодами. Сигнал остановки, пришедший
     // до старта, тоже отменяет показ.
     if (!Terminal::isStdoutTty() || shutdownRequested()) return;
+    // Администратор уже печатает следующую команду (type-ahead после restart)?
+    // Не показываем заставку вовсе: её «пропуск по любой клавише» съел бы
+    // первый символ набранной команды, и getline получил бы огрызок.
+    if (Terminal::inputPending()) return;
     Terminal::enableAnsi();
     const bool color = cfg.ui.color;
     const auto C = [color](const char* code) { return color ? code : ""; };
 
     const std::vector<SplashItem> items = splashChecklist(cfg);
+    // Кадр заставки занимает шапку (6 строк), пункты и подвал (4 строки);
+    // на терминале ниже — молча пропускаем (тот же принцип «не влезает —
+    // остаёмся без украшений», что у сцены дашборда).
+    if (Terminal::height() < static_cast<int>(items.size()) + 10) return;
     RawInputMode raw;  // пропуск по любой клавише (если stdin интерактивен)
 
     // Заставка живёт в альтернативном буфере, как и live-режим: после неё
@@ -139,8 +147,11 @@ void showSplash(const Config& cfg) {
         }
         f << ansi::clearToLineEnd() << '\n';
         f << ansi::clearToLineEnd() << '\n';
+        // Последняя строка БЕЗ '\n': на терминале ровно в высоту кадра перевод
+        // строки с нижнего ряда прокручивал бы альтернативный буфер на каждом
+        // кадре — заставка «тряслась» бы все ~2.4 секунды.
         f << pad << ' ' << C(ansi::grey()) << "любая клавиша — пропустить" << C(ansi::reset())
-          << ansi::clearToLineEnd() << '\n';
+          << ansi::clearToLineEnd();
         f << ansi::syncEnd();
         std::cout << f.str() << std::flush;
     };
@@ -168,6 +179,17 @@ void showSplash(const Config& cfg) {
         drawFrame(items.size(), 0);
         for (int t = 0; t < kFinalHoldMs && !skipped; t += kFrameMs) {
             skipped = interrupted(kFrameMs);
+        }
+    }
+
+    // Дожимаем хвост ввода (автоповтор зажатой клавиши, лишние нажатия):
+    // иначе он просочился бы в строку команд следующего экрана. Eof тоже
+    // выходит из цикла — закрытый stdin возвращал бы его бесконечно.
+    if (raw.active()) {
+        for (;;) {
+            char ch = 0;
+            const Key k = readKeyTimeout(ch, 0);
+            if (k == Key::None || k == Key::Eof) break;
         }
     }
 

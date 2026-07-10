@@ -60,8 +60,13 @@ public:
     // opsTail — хвост ленты операций: по нему определяется СУДЬБА исчезнувшего
     // из снимка клиента (операция OK -> ушёл довольным, FAIL -> растерянным,
     // записи нет -> не дождался). Пустой хвост допустим (тесты этапа 3).
+    // snapshotAgeSec — ВОЗРАСТ кэша снимков (кадры идут чаще опросов движка,
+    // см. LiveRenderer): на него экстраполируется остаток подхода (иначе при
+    // refresh_hz <= 2 дрейф твина превышал бы допуск пересинхронизации на
+    // каждом опросе), а грейс LeavePending тратится только на свежих снимках
+    // (устаревший кэш «вернуть» пропавшего клиента не может). 0 — снимок свеж.
     void tick(const AtmSnapshot& atm, const std::vector<ClientSnapshot>& queue, double nowSec,
-              const std::vector<OperationRecord>& opsTail = {});
+              const std::vector<OperationRecord>& opsTail = {}, double snapshotAgeSec = 0.0);
 
     // Был ли хотя бы один tick (до него view() пуста, а composeLines()
     // откатывается на статичную сцену buildSceneView).
@@ -129,6 +134,9 @@ private:
     double timeScale_;                 // cfg.simulation.time_scale (для подхода)
     bool teleportNext_ = true;         // первый tick всегда расставляет мгновенно
     bool ticked_ = false;
+    // Возраст кэша снимков на прошлом tick: возраст перестал расти (или снова
+    // ноль) — значит, LiveRenderer переопросил движок, снимок СВЕЖИЙ.
+    double lastSnapshotAge_ = -1.0;
 
     // Реестр актёров по id клиента. std::map — детерминированный порядок
     // обхода (важно для воспроизводимости кадров в тестах).

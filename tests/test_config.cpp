@@ -259,3 +259,17 @@ TEST(config_rejects_too_large_refresh_hz) {
     const Config c = ConfigLoader::loadFromString(R"({"ui": {"refresh_hz": 60}})");
     CHECK_EQ(c.ui.refreshHz, 60);
 }
+
+// Переполнение числового литерала («3.0e999» -> json::out_of_range, который НЕ
+// parse_error) тоже должно приходить наружу как ConfigError, а не как
+// «непредвиденная ошибка» в main.
+TEST(config_rejects_overflowing_number_as_config_error) {
+    bool threw = false;
+    try {
+        ConfigLoader::loadFromString(
+            R"({"clients": {"walk_seconds": {"min": 1.5, "max": 3.0e999}}})");
+    } catch (const ConfigError&) {
+        threw = true;
+    }
+    CHECK(threw);
+}

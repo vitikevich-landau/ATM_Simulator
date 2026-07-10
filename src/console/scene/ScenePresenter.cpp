@@ -136,7 +136,13 @@ void ScenePresenter::beginLeave(Actor& a, ActorState mood, double now) const {
 }
 
 void ScenePresenter::tick(const AtmSnapshot& atm, const std::vector<ClientSnapshot>& queue,
-                          double nowSec, const std::vector<OperationRecord>& opsTail) {
+                          double nowSec, const std::vector<OperationRecord>& opsTail,
+                          double snapshotAgeSec) {
+    // Свежесть кэша снимков: возраст перестал расти — LiveRenderer переопросил
+    // движок. Пока кэш устаревает, его содержимое ИЗМЕНИТЬСЯ не может — на
+    // этом стоят и экстраполяция подхода, и расход грейса LeavePending ниже.
+    const bool freshSnapshot = lastSnapshotAge_ < 0.0 || snapshotAgeSec <= lastSnapshotAge_;
+    lastSnapshotAge_ = snapshotAgeSec;
     // --- 1. Целевые позиции по снимку (снимок авторитетен) -------------------
     struct Target {
         double x = 0.0;
@@ -149,12 +155,19 @@ void ScenePresenter::tick(const AtmSnapshot& atm, const std::vector<ClientSnapsh
     }
     // ПОДХОД к банкомату (walk_seconds): движение подходящего — смысловое, его
     // темп задаёт снимок движка, а не константы сцены. remainReal — сколько
-    // РЕАЛЬНЫХ секунд осталось идти по данным снимка (модельные секунды из
-    // снимка делятся на time_scale).
+    // РЕАЛЬНЫХ секунд осталось идти. Остаток из КЭША снимков устарел ровно на
+    // возраст кэша — вычитаем его (иначе при refresh_hz <= 2 дрейф твина
+    // превышал бы kApproachResyncSec на каждом опросе, и подход дёргался бы
+    // чередой пересинхронизаций). На паузе прогресс подхода заморожен и не
+    // устаревает — возраст не вычитаем.
     const bool approaching = atm.approaching && atm.currentClientId.has_value();
+    const double staleSec = (atm.state == AtmState::Paused) ? 0.0 : snapshotAgeSec;
     const double approachRemainReal =
-        approaching ? (1.0 - atm.approachProgress) * atm.approachPlannedModelSec / timeScale_
-                    : 0.0;
+        approaching
+            ? std::max(0.0, (1.0 - atm.approachProgress) * atm.approachPlannedModelSec /
+                                    timeScale_ -
+                                staleSec)
+            : 0.0;
     const int slots = layout::visibleSlots(width_);
     for (std::size_t i = 0; i < queue.size(); ++i) {
         // Обслуживаемый не может одновременно стоять в очереди, но на всякий
@@ -181,21 +194,35 @@ void ScenePresenter::tick(const AtmSnapshot& atm, const std::vector<ClientSnapsh
         }
 
         // Ожидающие судьбу: запись об операции могла ещё не попасть в ленту к
-        // моменту снимка — даём ей kFateGraceTicks тиков. Успех -> доволен,
-        // отказ -> растерян, записи так и нет -> обслуженный всё равно уходит
-        // довольным (§4.5: операцию не бросают), ожидавший — не дождался.
+        // моменту снимка — даём ей kFateGraceTicks СВЕЖИХ снимков. Успех ->
+        // доволен, отказ -> растерян, записи так и нет -> обслуженный всё
+        // равно уходит довольным (§4.5: операцию не бросают), ожидавший — не
+        // дождался.
         if (a.state == ActorState::LeavePending) {
-            const Fate fate = lookupFate(opsTail, a.id);
-            if (fate == Fate::Success) {
-                beginLeave(a, ActorState::LeaveHappy, nowSec);
-            } else if (fate == Fate::Fail) {
-                beginLeave(a, ActorState::LeavePuzzled, nowSec);
-            } else if (--a.graceTicks <= 0) {
-                beginLeave(a, a.serving ? ActorState::LeaveHappy : ActorState::LeaveAngry,
-                           nowSec);
+            if (targets.count(a.id) != 0) {
+                // Ложная пропажа: snapshot() и queueSnapshot() читаются под
+                // разными захватами мьютекса, и в микрозазор взятия из очереди
+                // клиент мог не попасть НИ туда, НИ туда. Вернулся в снимок —
+                // отменяем ожидание ухода и обслуживаем обычной веткой ниже.
+                a.state = ActorState::QueueIdle;
+                a.stateSince = nowSec;
+            } else {
+                const Fate fate = lookupFate(opsTail, a.id);
+                if (fate == Fate::Success) {
+                    beginLeave(a, ActorState::LeaveHappy, nowSec);
+                } else if (fate == Fate::Fail) {
+                    beginLeave(a, ActorState::LeavePuzzled, nowSec);
+                } else if (freshSnapshot && --a.graceTicks <= 0) {
+                    // Грейс тратится только на СВЕЖИХ снимках: между опросами
+                    // кэш «вернуть» клиента не может, а кадры идут чаще
+                    // опросов — иначе двухтиковый грейс истекал бы раньше
+                    // первого же переопроса движка.
+                    beginLeave(a, a.serving ? ActorState::LeaveHappy : ActorState::LeaveAngry,
+                               nowSec);
+                }
+                ++it;
+                continue;
             }
-            ++it;
-            continue;
         }
 
         const auto found = targets.find(a.id);

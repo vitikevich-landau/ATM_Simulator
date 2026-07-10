@@ -154,6 +154,18 @@ bool stdinPending(int ms) {
 }  // namespace
 #endif
 
+bool Terminal::inputPending() {
+#ifdef _WIN32
+    // Готовность символьной клавиши для _getch — тот же критерий, что в
+    // readKeyTimeout (события мыши/фокуса _kbhit не считает).
+    return _kbhit() != 0;
+#else
+    // В каноническом (cooked) режиме select сигналит по готовой строке, в
+    // raw — по любому байту; заставке важен именно первый случай.
+    return stdinPending(0);
+#endif
+}
+
 Key readKey(char& ch) {
     ch = 0;
 #ifdef _WIN32

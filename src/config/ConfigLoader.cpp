@@ -1,5 +1,6 @@
 #include "atmsim/config/ConfigLoader.hpp"
 
+#include <cmath>  // std::isfinite (валидация walk_seconds)
 #include <filesystem>
 #include <fstream>
 #include <sstream>
@@ -48,11 +49,14 @@ void validate(const Config& c) {
         throw ConfigError("некорректный patience_seconds (нужно 0 <= min <= max)");
     }
     // Время подхода уходит в uniform_real_distribution(min, max), precondition
-    // которого — min <= max; отрицательное время бессмысленно. 0/0 — легальное
+    // которого — конечные min <= max; отрицательное или бесконечное время
+    // бессмысленно (inf может просочиться из отдельно взятого JSON-значения,
+    // даже если литеральное переполнение ловится на разборе). 0/0 — легальное
     // «подход мгновенный» (поведение до фичи подхода).
-    if (c.clients.walkSeconds.min < 0.0 ||
+    if (!std::isfinite(c.clients.walkSeconds.min) || !std::isfinite(c.clients.walkSeconds.max) ||
+        c.clients.walkSeconds.min < 0.0 ||
         c.clients.walkSeconds.min > c.clients.walkSeconds.max) {
-        throw ConfigError("некорректный walk_seconds (нужно 0 <= min <= max)");
+        throw ConfigError("некорректный walk_seconds (нужно конечные 0 <= min <= max)");
     }
     if (c.clients.arrivalRatePerMinute <= 0.0) {
         throw ConfigError("arrival_rate_per_minute должен быть больше нуля");
@@ -147,7 +151,11 @@ Config ConfigLoader::loadFromString(const std::string& jsonText) {
     json j;
     try {
         j = json::parse(jsonText, nullptr, true, true);
-    } catch (const json::parse_error& e) {
+    } catch (const json::exception& e) {
+        // Не только parse_error: переполнение числового литерала (например,
+        // «3.0e999») nlohmann кидает как json::out_of_range, который от
+        // parse_error НЕ наследуется — без широкого catch он улетал бы в main
+        // как «непредвиденная ошибка» вместо осмысленной ошибки конфигурации.
         throw ConfigError(std::string("некорректный JSON: ") + e.what());
     }
     if (!j.is_object()) {

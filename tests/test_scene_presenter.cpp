@@ -6,6 +6,7 @@
 //  нужен вовсе — снимки собираются руками, как их отдал бы AtmEngine.
 // ============================================================================
 #include <algorithm>
+#include <cmath>
 #include <string>
 #include <vector>
 
@@ -586,4 +587,63 @@ TEST(presenter_nervous_do_not_chat) {
         CHECK(findActor(p.view(), "#2")->chatBubble == 0);
         CHECK(findActor(p.view(), "#3")->chatBubble == 0);
     }
+}
+
+// --- Кэш снимков реже кадров (snapshotAgeSec) ---------------------------------
+
+// Подход при редких опросах движка (refresh_hz=2, кадры чаще): остаток пути из
+// устаревшего кэша экстраполируется возрастом снимка — твин НЕ дёргается
+// пересинхронизациями, актёр идёт монотонно и приходит точно в срок движка.
+TEST(presenter_approach_smooth_with_stale_snapshot_cache) {
+    ScenePresenter p(kW, kRows);
+    p.tick(AtmSnapshot{}, {}, 0.0);  // телепорт-кадр: сцена пуста
+
+    // Подход 3 c; опрос движка каждые 0.5 c, кадры каждые 0.1 c.
+    const double t0 = 1.0, planned = 3.0;
+    int lastX = kW;  // движение справа налево: x строго не растёт
+    for (double t = t0; t <= t0 + planned + 0.001; t += 0.1) {
+        const double sincePoll = std::fmod(t - t0 + 1e-9, 0.5);
+        const double pollT = t - sincePoll;
+        const double progress = std::min((pollT - t0) / planned, 1.0);
+        p.tick(approachingTo(7, progress, planned), {}, t, {}, sincePoll);
+        const int x = findActor(p.view(), "#7")->x;
+        CHECK(x <= lastX);  // без откатов и рывков назад
+        lastX = x;
+    }
+    // К концу срока движка актёр ровно у банкомата (без финального «телепорта»).
+    CHECK_EQ(lastX, layout::kServeX);
+}
+
+// Ложная пропажа клиента из-за перекоса чтения snapshot()/queueSnapshot() в
+// момент взятия из очереди: пока кэш снимков не переопрошен (возраст растёт),
+// грейс LeavePending не тратится, а на первом же свежем снимке клиент
+// возвращается в строй — никакого «ушёл злым и вошёл заново».
+TEST(presenter_leave_pending_survives_snapshot_read_skew) {
+    ScenePresenter p(kW, kRows);
+    p.tick(serving(1), queueOf({2}), 0.0);  // телепорт: #1 у банкомата, #2 в слоте
+
+    // Перекошенная пара: #2 нет НИ в текущих, НИ в очереди (движок взял его из
+    // очереди между двумя чтениями). Свежий опрос в t=1.0, дальше кадры 15 fps
+    // со стареющим кэшем.
+    p.tick(AtmSnapshot{}, {}, 1.0, {}, 0.0);
+    p.tick(AtmSnapshot{}, {}, 1.066, {}, 0.066);
+    p.tick(AtmSnapshot{}, {}, 1.133, {}, 0.133);
+    p.tick(AtmSnapshot{}, {}, 1.2, {}, 0.2);
+    {
+        // #2 всё ещё на сцене и не ушёл злым (грейс не истёк на устаревшем кэше).
+        const scene::SceneActorView* a2 = findActor(p.view(), "#2");
+        CHECK(a2 != nullptr);
+        CHECK(a2->tint != scene::Tint::Red);
+        CHECK_EQ(a2->y, layout::kActorTopY);  // не на дорожке выхода
+    }
+
+    // Следующий опрос движка (свежий снимок) приносит правду: #2 подходит к
+    // банкомату — ожидание ухода отменяется, актёр продолжает жить.
+    p.tick(approachingTo(2, 0.1, 2.0), {}, 1.25, {}, 0.0);
+    p.tick(approachingTo(2, 0.5, 2.0), {}, 2.05, {}, 0.0);
+    const scene::SceneActorView* a2 = findActor(p.view(), "#2");
+    CHECK(a2 != nullptr);
+    CHECK(a2->tint != scene::Tint::Red);
+    CHECK_EQ(a2->y, layout::kActorTopY);
+    CHECK(a2->x <= layout::slotX(0));  // идёт от слота к банкомату
 }

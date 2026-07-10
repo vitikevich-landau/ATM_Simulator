@@ -269,7 +269,9 @@ std::vector<std::string> LiveRenderer::composeLinesFrom(
     {
         std::ostringstream os;
         if (s.currentClientId && s.approaching) {
-            os << " └ " << C(ansi::cyan()) << "подходит к банкомату" << R() << ' ';
+            // Метка не длиннее 16 колонок: с полосой и «100%» строка должна
+            // влезать в минимальную левую колонку (40 колонок на терминале 60).
+            os << " └ " << C(ansi::cyan()) << "идёт к банкомату" << R() << ' ';
             if (cfg_.ui.showProgressBars) {
                 os << '[' << C(ansi::cyan()) << bar(s.approachProgress, 10) << R() << "] ";
             }
@@ -476,7 +478,12 @@ void LiveRenderer::renderLoop() {
             if (presenter_) {
                 const double nowSec =
                     std::chrono::duration<double>(nowTp.time_since_epoch()).count();
-                presenter_->tick(cachedSnap_, cachedQueue_, nowSec, cachedOps_);
+                // Возраст кэша снимков: по нему презентер экстраполирует остаток
+                // подхода между опросами и понимает, свежий ли снимок (грейс
+                // судьбы LeavePending тратится только на свежих).
+                const double snapAgeSec = std::chrono::duration<double>(nowTp - lastSnap).count();
+                presenter_->tick(cachedSnap_, cachedQueue_, nowSec, cachedOps_,
+                                 snapAgeSec > 0.0 ? snapAgeSec : 0.0);
             }
             paintFrame(composeLinesFrom(cachedSnap_, cachedStats_, cachedQueue_, cachedOps_));
         }
