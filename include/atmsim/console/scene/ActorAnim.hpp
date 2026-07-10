@@ -39,4 +39,11 @@ ActorPose pickNervousPose(ClientId id, double tSec);
 // (связь с банком, отсчёт купюр, печать чека...) — клиент ждёт и переминается.
 ActorPose pickActPose(ClientId id, std::optional<ServiceStage> stage, double tSec);
 
+// Личный ТЕМП ходьбы актёра: множитель к базовой скорости сцены, 0.75..1.35.
+// Детерминирован от id (свой «сольник», чтобы не коррелировать с фазой
+// idle-циклов): кто-то семенит, кто-то вышагивает — очередь и уходящие
+// перестают двигаться строем. НЕ применяется к подходу к банкомату: его темп
+// диктует движок (approachProgress из снимка).
+double walkSpeedFactor(ClientId id);
+
 }  // namespace atmsim::scene

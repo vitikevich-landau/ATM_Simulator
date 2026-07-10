@@ -46,6 +46,13 @@ ActorPose pickNervousPose(ClientId id, double tSec) {
                                                        : ActorPose::IdleShiftR;
 }
 
+double walkSpeedFactor(ClientId id) {
+    // 61 ступень темпа в [0.75, 1.35] с шагом 0.01. Своя соль (не голый id,
+    // как у personalPhase): иначе темп коррелировал бы с фазой переминаний.
+    const std::uint64_t h = splitmix64(static_cast<std::uint64_t>(id) ^ 0xA11CE5CE9E57EEDull);
+    return 0.75 + static_cast<double>(h % 61) / 100.0;
+}
+
 ActorPose pickActPose(ClientId id, std::optional<ServiceStage> stage, double tSec) {
     if (!stage) return ActorPose::ReachLeft;
     switch (*stage) {

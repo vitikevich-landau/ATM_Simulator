@@ -465,3 +465,54 @@ TEST(presenter_teleport_places_approaching_on_path) {
     CHECK_EQ(findActor(p.view(), "#3")->x, layout::kServeX);
     CHECK(findActor(p.view(), "#3")->tint != scene::Tint::Cyan);
 }
+
+// --- Личный темп ходьбы (walkSpeedFactor) ------------------------------------
+
+// Множитель темпа детерминирован, лежит в заявленном диапазоне и реально
+// различается между клиентами (не все шагают строем).
+TEST(actor_anim_walk_speed_factor_is_personal) {
+    double minF = 10.0, maxF = 0.0;
+    for (int id = 1; id <= 50; ++id) {
+        const double f = scene::walkSpeedFactor(static_cast<ClientId>(id));
+        CHECK(f >= 0.75);
+        CHECK(f <= 1.36);
+        CHECK_EQ(f, scene::walkSpeedFactor(static_cast<ClientId>(id)));
+        minF = std::min(minF, f);
+        maxF = std::max(maxF, f);
+    }
+    CHECK(maxF - minF > 0.2);
+}
+
+// Два одновременно вошедших актёра доходят до слотов за РАЗНОЕ время: длина
+// walk-in ограничена потолком, масштабируемым личным темпом (1.2 c / f), —
+// быстрый уже стоит на месте, медленный ещё в пути.
+TEST(presenter_walkin_speed_is_personal) {
+    // Детерминированно подбираем пару id с заметно разными темпами.
+    ClientId fast = 1, slow = 1;
+    for (ClientId id = 1; id <= 40; ++id) {
+        if (scene::walkSpeedFactor(id) > scene::walkSpeedFactor(fast)) fast = id;
+        if (scene::walkSpeedFactor(id) < scene::walkSpeedFactor(slow)) slow = id;
+    }
+    CHECK(scene::walkSpeedFactor(fast) - scene::walkSpeedFactor(slow) > 0.2);
+
+    ScenePresenter p(kW, kRows);
+    p.tick(AtmSnapshot{}, {}, 0.0);  // телепорт-кадр: сцена пуста
+    const std::vector<ClientSnapshot> q =
+        queueOf({static_cast<int>(slow), static_cast<int>(fast)});
+    const std::string slowLabel = "#" + std::to_string(slow);
+    const std::string fastLabel = "#" + std::to_string(fast);
+
+    // Оба входят одновременно с правого края (дистанции до слотов велики,
+    // работает потолок — длительность зависит только от темпа).
+    double fastArrivedAt = -1.0;
+    for (double t = 1.0; t <= 4.0; t += 0.05) {
+        p.tick(AtmSnapshot{}, q, t);
+        const bool fastAtSlot = findActor(p.view(), fastLabel)->x == layout::slotX(1);
+        const bool slowAtSlot = findActor(p.view(), slowLabel)->x == layout::slotX(0);
+        if (fastAtSlot && fastArrivedAt < 0.0) {
+            fastArrivedAt = t;
+            CHECK(!slowAtSlot);  // медленный в этот момент ещё в пути
+        }
+    }
+    CHECK(fastArrivedAt > 0.0);  // быстрый дошёл в пределах прогона
+}

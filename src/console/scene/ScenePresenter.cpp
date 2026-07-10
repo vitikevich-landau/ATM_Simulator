@@ -89,9 +89,10 @@ void ScenePresenter::retarget(Actor& a, double targetX, double now) const {
         a.tween = {targetX, targetX, now, 0.0};
         return;
     }
-    // Catch-up: скорость не ниже базовой, но и не медленнее, чем «успеть за
-    // kCatchUpSec» — очередь из многих актёров продвигается синхронно.
-    const double speed = std::max(kWalkSpeed, dist / kCatchUpSec);
+    // Catch-up: скорость не ниже ЛИЧНОЙ базовой (у каждого свой темп —
+    // walkSpeedFactor), но и не медленнее, чем «успеть за kCatchUpSec» —
+    // очередь из многих актёров продвигается дружно, хоть и не строем.
+    const double speed = std::max(kWalkSpeed * walkSpeedFactor(a.id), dist / kCatchUpSec);
     a.tween = {cur, targetX, now, dist / speed};
 }
 
@@ -125,7 +126,12 @@ void ScenePresenter::beginLeave(Actor& a, ActorState mood, double now) const {
     a.stateSince = now;
     const double cur = posAt(a.tween, now);
     const double exitX = static_cast<double>(width_) + 2.0;
-    const double dur = std::min((exitX - cur) / (kWalkSpeed * kLeaveSpeedFactor), kLeaveMaxSec);
+    // Личный темп масштабирует и скорость, и потолок длительности (медленному
+    // позволено идти чуть дольше — иначе на широкой сцене потолок съедал бы
+    // всю разницу темпов, и уходящие снова шагали бы строем).
+    const double f = walkSpeedFactor(a.id);
+    const double dur =
+        std::min((exitX - cur) / (kWalkSpeed * kLeaveSpeedFactor * f), kLeaveMaxSec / f);
     a.tween = {cur, exitX, now, dur};
 }
 
@@ -276,9 +282,13 @@ void ScenePresenter::tick(const AtmSnapshot& atm, const std::vector<ClientSnapsh
             const double dist = std::abs(spawnX - t.x);
             // Подходящий (очередь была пуста, клиент идёт с «улицы» прямо к
             // терминалу) идёт в срок движка — без потолка kWalkInMaxSec:
-            // синхронизация с движком важнее темпа входа.
-            const double dur = spawnApproaching ? std::max(approachRemainReal, 0.0)
-                                                : std::min(dist / kWalkSpeed, kWalkInMaxSec);
+            // синхронизация с движком важнее темпа входа. Обычный walk-in —
+            // личным темпом; потолок масштабируется обратно темпу (см.
+            // beginLeave), иначе на широкой сцене он съедал бы всю разницу.
+            const double f = walkSpeedFactor(id);
+            const double dur = spawnApproaching
+                                   ? std::max(approachRemainReal, 0.0)
+                                   : std::min(dist / (kWalkSpeed * f), kWalkInMaxSec / f);
             a.tween = {spawnX, t.x, nowSec, dur};
             a.state = ActorState::WalkIn;
         }
