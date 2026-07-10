@@ -155,6 +155,79 @@ void AtmEngine::generateArrivals() {
 }
 
 // ---------------------------------------------------------------------------
+//  «Занятое» прерываемое ожидание (§6.2) — общий механизм подхода и
+//  обслуживания. Вместо «слепого» sleep_for ждём по условию, накапливая ЧИСТОЕ
+//  время работы (servedReal), пока не набежит realDurationSec. Разные
+//  прерывания трактуем по-разному (§4.6):
+//    * pause — ПРИОСТАНОВКА: таймер замирает и продолжается с resume — остаток
+//      дорабатываем; прогресс для снимков тоже заморожен (слайс закрыт);
+//    * stop — выходим раньше срока (вызывающий решает, что делать дальше);
+//    * maintenance start во время работы state_ не меняет: ТО стартует после
+//      штатного окончания текущего клиента (см. requestMaintenance).
+//  Пока идут ожидания, лок ОТПУЩЕН — читатели-снимки не блокируются, а
+//  pause/resume/stop применяются мгновенно (§5, §14). Слайсы ограничиваются
+//  ближайшим дедлайном терпения в очереди: просыпаемся и выкидываем
+//  перетерпевших (§4.1).
+// ---------------------------------------------------------------------------
+double AtmEngine::busyWaitLocked(std::unique_lock<std::mutex>& lock, double realDurationSec,
+                                 double& servedRealSecOut,
+                                 std::optional<Clock::time_point>& sliceStartOut) {
+    const std::chrono::duration<double> realDuration(realDurationSec);
+    std::chrono::duration<double> servedReal(0.0);
+    for (;;) {
+        // Режим проверяем ДО ожидания, под тем же непрерывным захватом лока:
+        // команда могла прийти в зазор, пока лок был отпущен (между фазами
+        // цикла run), — она уже записала state_ и «прозвенела» notify_all в
+        // пустоту. Сырое ожидание без этой проверки проспало бы команду целый
+        // слайс: stop подвисал бы на join, а пауза НЕ замораживала бы таймер
+        // (servedReal накапливался бы в Paused — §4.6).
+        const AtmState mode = state_.load();
+        if (mode == AtmState::Stopped) break;
+        if (mode == AtmState::Paused) {
+            // Пауза: замираем до resume/stop, НЕ тратя время работы. Прогресс
+            // для снимков замораживаем: фиксируем уже отработанное и гасим
+            // признак «слайс идёт» — snapshot() перестаёт прибавлять текущее
+            // время (§4.6).
+            servedRealSecOut = servedReal.count();
+            sliceStartOut.reset();
+            while (state_.load() == AtmState::Paused) {
+                if (const auto patienceDeadline = nextQueuePatienceDeadlineLocked()) {
+                    wakeUp_.wait_until(lock, *patienceDeadline);
+                } else {
+                    wakeUp_.wait(lock);
+                }
+                pruneExpiredQueueLocked();
+            }
+            continue;  // Stopped поймает проверка сверху; Serving — доработаем
+        }
+
+        // Serving: ждём остаток, но не дальше ближайшего дедлайна терпения.
+        const std::chrono::duration<double> remaining = realDuration - servedReal;
+        if (remaining <= std::chrono::duration<double>::zero()) break;
+
+        std::chrono::duration<double> slice = remaining;
+        if (const auto patienceDeadline = nextQueuePatienceDeadlineLocked()) {
+            auto untilPatience =
+                std::chrono::duration<double>(*patienceDeadline - Clock::now());
+            if (untilPatience < std::chrono::duration<double>::zero()) {
+                untilPatience = std::chrono::duration<double>::zero();
+            }
+            if (untilPatience < slice) slice = untilPatience;
+        }
+
+        const auto sliceStart = Clock::now();
+        // Публикуем начало слайса: снимки считают прогресс как «накопленное +
+        // (сейчас − начало слайса)», пока мы спим ниже с отпущенным локом.
+        servedRealSecOut = servedReal.count();
+        sliceStartOut = sliceStart;
+        wakeUp_.wait_for(lock, slice);
+        servedReal += std::chrono::duration<double>(Clock::now() - sliceStart);
+        pruneExpiredQueueLocked();
+    }
+    return servedReal.count();
+}
+
+// ---------------------------------------------------------------------------
 //  ПОТОК ОБСЛУЖИВАНИЯ. Главный цикл банкомата.
 // ---------------------------------------------------------------------------
 void AtmEngine::run() {
@@ -166,6 +239,7 @@ void AtmEngine::run() {
         Client client;
         bool haveClient = false;
         double serviceModelSec = 0.0;
+        double walkModelSec = 0.0;  // время подхода к банкомату (clients.walk_seconds)
         double waitedModel = 0.0;  // сколько клиент прождал (для статистики)
         Money cashAfter = 0;       // касса после операции (для лога низкой кассы)
 
@@ -265,17 +339,36 @@ void AtmEngine::run() {
             state_.store(AtmState::Serving);
             // Длительность обслуживания берём здесь, под локом, из «своего» RNG.
             serviceModelSec = serviceProvider_->nextSeconds(client.requestedOperation, serviceRng_);
-            // Публикуем старт обслуживания для снимков «что делает клиент»:
-            // отработано 0, слайс НЕ открываем — его откроет фаза 2 перед
-            // первым ожиданием. Если открыть слайс уже здесь, интервал до
-            // входа в фазу 2 (лок отпускается между фазами) не попал бы в
+            // Время подхода к банкомату (clients.walk_seconds): клиент сначала
+            // ИДЁТ к терминалу, обслуживание начнётся после (фаза 1.5). При
+            // min == max RNG не трогаем вовсе: розыгрыш не смещает
+            // последовательность serviceRng_, и конфиги без подхода (0/0)
+            // воспроизводят прогоны прежних версий бит-в-бит.
+            const auto& walk = cfg_.clients.walkSeconds;
+            walkModelSec = walk.min;
+            if (walk.max > walk.min) {
+                std::uniform_real_distribution<double> walkDist(walk.min, walk.max);
+                walkModelSec = walkDist(serviceRng_);
+            }
+            // Публикуем старт ТЕКУЩЕЙ фазы для снимков «что делает клиент»:
+            // отработано 0, слайс НЕ открываем — его откроет busyWaitLocked
+            // перед первым ожиданием. Если открыть слайс уже здесь, интервал
+            // до входа в фазу 2 (лок отпускается между фазами) не попал бы в
             // servedReal и выбрасывался бы при перебазировании: снимок в
             // зазоре показал бы прогресс БОЛЬШЕ, чем следующий за ним, — а
             // пауза, попавшая в зазор, «шла» бы вместо заморозки (§4.6).
             // Прогресс в зазоре равен честному нулю (зазор — микросекунды).
-            servicePlannedModelSec_ = serviceModelSec;
-            serviceServedRealSec_ = 0.0;
-            serviceSliceStart_.reset();
+            // С подходом первой фазой идёт ОН (снимок отдаёт approaching, этап
+            // пуст); без подхода — сразу обслуживание, как раньше.
+            if (walkModelSec > 0.0) {
+                approachPlannedModelSec_ = walkModelSec;
+                approachServedRealSec_ = 0.0;
+                approachSliceStart_.reset();
+            } else {
+                servicePlannedModelSec_ = serviceModelSec;
+                serviceServedRealSec_ = 0.0;
+                serviceSliceStart_.reset();
+            }
             haveClient = true;
         }
         if (!haveClient) continue;
@@ -283,80 +376,44 @@ void AtmEngine::run() {
         // Реальная длительность = модельная / ускорение времени.
         const std::chrono::duration<double> realDuration(serviceModelSec / cfg_.simulation.timeScale);
 
-        // --- Фаза 2: обслуживание (ПРЕРЫВАЕМОЕ ОЖИДАНИЕ) — сердце §6.2 ---------
+        // --- Фазы 1.5 и 2: подход и обслуживание (ПРЕРЫВАЕМОЕ ОЖИДАНИЕ) --------
+        // Механика ожидания у обеих фаз общая — busyWaitLocked (сердце §6.2):
+        // пауза честно замораживает таймер и прогресс, стоп прерывает раньше
+        // срока, во время сна лок отпущен. Прерывания трактуются так (§4.6):
+        //   * pause — клиент остаётся «в обслуживании» (currentClient_ не
+        //     сбрасываем), остаток фазы дорабатывается после resume;
+        //   * stop — обе фазы завершаются раньше, но операцию ниже всё равно
+        //     доводим до конца: клиент уже взят из очереди, начатое не бросаем;
+        //   * maintenance start state_ не меняет: ТО стартует после клиента.
         {
             std::unique_lock<std::mutex> lock(mutex_);
 
-            // Вместо «слепого» sleep_for(realDuration) ждём по условию, накапливая
-            // ЧИСТОЕ время обслуживания (servedReal), пока не набежит realDuration.
-            // Разные прерывания трактуем по-разному (§4.6):
-            //   * pause — ПРИОСТАНОВКА: клиент остаётся «в обслуживании»
-            //     (currentClient_ не сбрасываем), таймер службы замирает и
-            //     продолжается с resume — остаток дообслуживаем;
-            //   * stop — выходим из цикла и ниже доводим операцию до конца;
-            //   * maintenance start во время обслуживания не меняет state_ сразу:
-            //     ТО стартует после штатного окончания текущего клиента.
-            // Пока идут ожидания, лок ОТПУЩЕН — читатели-снимки не блокируются,
-            // а pause/resume/stop применяются мгновенно (§5, §14).
-            std::chrono::duration<double> servedReal(0.0);
-            for (;;) {
-                // Режим проверяем ДО ожидания, под тем же непрерывным захватом
-                // лока. Между фазами 1 и 2 лок отпускался, и команда stop/pause
-                // могла успеть в этот зазор: она уже записала state_ и «прозвенела»
-                // notify_all в пустоту — никто не ждал. Сырое ожидание без этой
-                // проверки проспало бы команду целый слайс (до полной длительности
-                // обслуживания): stop подвисал бы на join, а пауза НЕ замораживала
-                // бы таймер службы (servedReal накапливался бы в Paused — §4.6).
-                const AtmState mode = state_.load();
-                if (mode == AtmState::Stopped) break;  // доводим операцию ниже
-                if (mode == AtmState::Paused) {
-                    // Пауза: замираем до resume/stop, НЕ тратя время службы. Остаток
-                    // (realDuration − уже отработанное) дообслужим после возобновления.
-                    // Прогресс для снимков тоже замораживаем: фиксируем уже
-                    // отработанное и гасим признак «слайс идёт» — snapshot()
-                    // перестаёт прибавлять текущее время (§4.6).
-                    serviceServedRealSec_ = servedReal.count();
-                    serviceSliceStart_.reset();
-                    while (state_.load() == AtmState::Paused) {
-                        if (const auto patienceDeadline = nextQueuePatienceDeadlineLocked()) {
-                            wakeUp_.wait_until(lock, *patienceDeadline);
-                        } else {
-                            wakeUp_.wait(lock);
-                        }
-                        pruneExpiredQueueLocked();
-                    }
-                    continue;  // Stopped поймает проверка сверху; Serving — дообслужим
-                }
-
-                // Serving: ждём остаток обслуживания, но не дальше ближайшего
-                // дедлайна терпения в очереди — проснёмся и выкинем перетерпевших.
-                const std::chrono::duration<double> remaining = realDuration - servedReal;
-                if (remaining <= std::chrono::duration<double>::zero()) break;
-
-                std::chrono::duration<double> slice = remaining;
-                if (const auto patienceDeadline = nextQueuePatienceDeadlineLocked()) {
-                    auto untilPatience =
-                        std::chrono::duration<double>(*patienceDeadline - Clock::now());
-                    if (untilPatience < std::chrono::duration<double>::zero()) {
-                        untilPatience = std::chrono::duration<double>::zero();
-                    }
-                    if (untilPatience < slice) slice = untilPatience;
-                }
-
-                const auto sliceStart = Clock::now();
-                // Публикуем начало слайса: снимки считают прогресс как
-                // «накопленное + (сейчас − начало слайса)», пока мы спим ниже
-                // с отпущенным локом.
-                serviceServedRealSec_ = servedReal.count();
-                serviceSliceStart_ = sliceStart;
-                wakeUp_.wait_for(lock, slice);
-                servedReal += std::chrono::duration<double>(Clock::now() - sliceStart);
-                pruneExpiredQueueLocked();
+            // Фаза 1.5: ПОДХОД к банкомату (clients.walk_seconds). Пока клиент
+            // идёт, снимок отдаёт approaching/approachProgress, а этап пуст.
+            // Подход — НЕ занятость банкомата: в busyModel_ (загрузку) идёт
+            // только обслуживание ниже.
+            if (walkModelSec > 0.0) {
+                busyWaitLocked(lock, walkModelSec / cfg_.simulation.timeScale,
+                               approachServedRealSec_, approachSliceStart_);
+                // Клиент дошёл (или подход прерван стопом): гасим поля подхода
+                // и открываем обслуживание — с этого момента снимок отдаёт
+                // этап и serviceProgress. Всё под одним непрерывным локом,
+                // «дырявого» снимка между фазами не существует.
+                approachPlannedModelSec_ = 0.0;
+                approachServedRealSec_ = 0.0;
+                approachSliceStart_.reset();
+                servicePlannedModelSec_ = serviceModelSec;
+                serviceServedRealSec_ = 0.0;
+                serviceSliceStart_.reset();
             }
+
+            // Фаза 2: само обслуживание.
+            const double servedRealSec = busyWaitLocked(lock, realDuration.count(),
+                                                        serviceServedRealSec_, serviceSliceStart_);
             // Фактически прошедшее МОДЕЛЬНОЕ время обслуживания (без учёта пауз).
             // При штатном завершении ~= serviceModelSec; при stop/ТО в середине —
             // меньше. Нужно для честного учёта загрузки ниже.
-            const double actualServiceModelSec = servedReal.count() * cfg_.simulation.timeScale;
+            const double actualServiceModelSec = servedRealSec * cfg_.simulation.timeScale;
 
             // Операцию доводим до конца в любом случае (§4.6 по умолчанию —
             // «доработать текущую»): мы не ждём остаток задержки, но результат
@@ -591,12 +648,26 @@ AtmSnapshot AtmEngine::snapshot() const {
     if (currentClient_) {
         s.currentClientId = currentClient_->id;
         s.currentOperation = currentClient_->requestedOperation;
-        // «Что делает клиент»: доля отработанного времени обслуживания и
+        // «Что делает клиент»: доля отработанного времени текущей фазы и
         // тематический этап по ней (см. ServiceStages.hpp и комментарий к
         // servicePlannedModelSec_ в заголовке). Прогресс непрерывен: пока
         // поток обслуживания спит свой слайс, снимок прибавляет к
         // накопленному времени длительность текущего слайса «на лету».
-        if (servicePlannedModelSec_ > 0.0) {
+        // Фазы строго последовательны: пока клиент ИДЁТ к банкомату, ненулевой
+        // approachPlannedModelSec_ (этап пуст, обслуживание не началось);
+        // когда дошёл — ненулевой servicePlannedModelSec_.
+        if (approachPlannedModelSec_ > 0.0) {
+            double walkedRealSec = approachServedRealSec_;
+            if (approachSliceStart_) {
+                walkedRealSec +=
+                    std::chrono::duration<double>(Clock::now() - *approachSliceStart_).count();
+            }
+            const double realWalkSec = approachPlannedModelSec_ / cfg_.simulation.timeScale;
+            const double frac = (realWalkSec > 0.0) ? walkedRealSec / realWalkSec : 1.0;
+            s.approaching = true;
+            s.approachProgress = std::clamp(frac, 0.0, 1.0);
+            s.approachPlannedModelSec = approachPlannedModelSec_;
+        } else if (servicePlannedModelSec_ > 0.0) {
             double servedRealSec = serviceServedRealSec_;
             if (serviceSliceStart_) {
                 servedRealSec +=

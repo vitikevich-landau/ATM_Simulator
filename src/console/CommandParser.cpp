@@ -63,6 +63,17 @@ Command parseCommand(const std::string& line) {
     } else if (cmd == "live") {
         // "live" — войти в дашборд; "live off" — выйти в командный режим.
         c.type = (tok.size() >= 2 && tok[1] == "off") ? CommandType::LiveOff : CommandType::Live;
+    } else if (cmd == "scene") {
+        // "scene on|off" — анимированная сцена; без аргумента — переключить.
+        c.type = CommandType::Scene;
+        if (tok.size() >= 2) {
+            if (tok[1] == "on") c.onOff = true;
+            else if (tok[1] == "off") c.onOff = false;
+            else {
+                c.error = "нужно: scene [on|off]";
+                return c;
+            }
+        }
     } else if (cmd == "maintenance") {
         if (tok.size() < 2) {
             c.error = "нужно: maintenance start [сек] | maintenance stop";

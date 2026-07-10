@@ -28,6 +28,7 @@ enum class CommandType {
     Resume,
     Live,              // live — войти в живой дашборд
     LiveOff,           // live off — выйти в командный режим
+    Scene,             // scene [on|off] — анимированная сцена (без аргумента — переключить)
     MaintenanceStart,  // maintenance start [сек]
     MaintenanceStop,   // maintenance stop
     Stop,        // stop / exit / quit
@@ -42,6 +43,7 @@ struct Command {
     std::optional<std::size_t> last;       // operations --last N
     std::optional<OperationType> opType;   // operations --type T
     std::optional<int> seconds;            // maintenance start [сек]
+    std::optional<bool> onOff;             // scene on|off (nullopt — переключить)
     std::string filename;                  // export <file>
     std::string word;                      // исходное первое слово (для сообщений)
     std::string error;                     // непусто, если разбор не удался

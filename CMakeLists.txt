@@ -38,6 +38,7 @@ endif()
 # --- Опции проекта -----------------------------------------------------------
 option(ATMSIM_WARNINGS_AS_ERRORS "Считать предупреждения ошибками" OFF)
 option(ATMSIM_BUILD_TESTS        "Собирать юнит-тесты"             ON)
+option(ATMSIM_BUILD_TOOLS        "Собирать вспомогательные инструменты (tools/)" OFF)
 
 # --- Общая интерфейсная цель с флагами ---------------------------------------
 # INTERFACE-библиотека не компилируется сама, а «раздаёт» свои свойства тем,
@@ -50,7 +51,7 @@ find_package(Threads REQUIRED)
 target_link_libraries(atmsim_flags INTERFACE Threads::Threads)
 
 if(MSVC)
-    target_compile_options(atmsim_flags INTERFACE /W4 /permissive-)
+    target_compile_options(atmsim_flags INTERFACE /W4 /permissive- /utf-8)
     if(ATMSIM_WARNINGS_AS_ERRORS)
         target_compile_options(atmsim_flags INTERFACE /WX)
     endif()
@@ -99,19 +100,49 @@ add_library(atmsim_engine
     src/engine/AtmEngine.cpp)
 target_link_libraries(atmsim_engine PUBLIC atmsim_config atmsim_reporting)
 
-# --- Консоль администратора (M3/M4 + M6 дашборд + M7 сигналы) -----------------
+# --- Консоль администратора (M3/M4 + M6 дашборд + M7 сигналы + сцена) ---------
+# Подкаталог scene/ — анимированная сцена дашборда (feature/scene): клеточная
+# канва, спрайты, презентационный слой актёров. Живёт в console-слое, потому
+# что это чистая презентация поверх снимков движка.
 add_library(atmsim_console
     src/console/CommandParser.cpp
     src/console/Terminal.cpp
+    src/console/FrameDiffer.cpp
     src/console/LiveRenderer.cpp
     src/console/Signals.cpp
-    src/console/AdminConsole.cpp)
+    src/console/SplashScreen.cpp
+    src/console/AdminConsole.cpp
+    src/console/scene/GlyphSet.cpp
+    src/console/scene/SceneCanvas.cpp
+    src/console/scene/SceneSprites.cpp
+    src/console/scene/SceneComposer.cpp
+    src/console/scene/ScenePresenter.cpp
+    src/console/scene/ActorAnim.cpp)
 target_link_libraries(atmsim_console PUBLIC atmsim_engine)
+if(WIN32)
+    # timeBeginPeriod/timeEndPeriod (TimerResolutionGuard в Terminal.cpp).
+    # Для MSVC зависимость продублирована pragma comment(lib) в исходнике,
+    # но MinGW/clang прагму игнорируют — линкуем явно.
+    target_link_libraries(atmsim_console PUBLIC winmm)
+endif()
 
 # --- Исполняемый файл --------------------------------------------------------
 add_executable(atm_sim
     src/main.cpp)
 target_link_libraries(atm_sim PRIVATE atmsim_console)
+
+# --- Вспомогательные инструменты (не собираются по умолчанию) -----------------
+# term_bench — измеритель «бюджета кадра» терминала для фичи «сцена» (этап 0):
+# самодостаточный бинарь без зависимостей от библиотек проекта. Методика и
+# снятые цифры — в docs/scene_frame_budget.md.
+if(ATMSIM_BUILD_TOOLS)
+    add_executable(term_bench tools/term_bench.cpp)
+    target_link_libraries(term_bench PRIVATE atmsim_flags)
+    if(WIN32)
+        # timeBeginPeriod/timeEndPeriod (замер режима hires) живут в winmm.
+        target_link_libraries(term_bench PRIVATE winmm)
+    endif()
+endif()
 
 # --- Тесты -------------------------------------------------------------------
 # Пока используется минимальный собственный харнес (tests/simple_test.hpp) —
@@ -131,6 +162,11 @@ if(ATMSIM_BUILD_TESTS)
         tests/test_engine.cpp
         tests/test_parser.cpp
         tests/test_renderer.cpp
+        tests/test_scene_canvas.cpp
+        tests/test_scene_compose.cpp
+        tests/test_scene_presenter.cpp
+        tests/test_frame_differ.cpp
+        tests/test_splash.cpp
         tests/test_logger.cpp)
     target_include_directories(atmsim_tests PRIVATE tests)
     target_link_libraries(atmsim_tests PRIVATE atmsim_console)

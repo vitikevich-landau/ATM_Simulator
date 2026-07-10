@@ -1,5 +1,6 @@
 #include "atmsim/config/ConfigLoader.hpp"
 
+#include <cmath>  // std::isfinite (валидация walk_seconds)
 #include <filesystem>
 #include <fstream>
 #include <sstream>
@@ -46,6 +47,16 @@ void validate(const Config& c) {
     if (c.clients.patienceSeconds.min < 0 ||
         c.clients.patienceSeconds.min > c.clients.patienceSeconds.max) {
         throw ConfigError("некорректный patience_seconds (нужно 0 <= min <= max)");
+    }
+    // Время подхода уходит в uniform_real_distribution(min, max), precondition
+    // которого — конечные min <= max; отрицательное или бесконечное время
+    // бессмысленно (inf может просочиться из отдельно взятого JSON-значения,
+    // даже если литеральное переполнение ловится на разборе). 0/0 — легальное
+    // «подход мгновенный» (поведение до фичи подхода).
+    if (!std::isfinite(c.clients.walkSeconds.min) || !std::isfinite(c.clients.walkSeconds.max) ||
+        c.clients.walkSeconds.min < 0.0 ||
+        c.clients.walkSeconds.min > c.clients.walkSeconds.max) {
+        throw ConfigError("некорректный walk_seconds (нужно конечные 0 <= min <= max)");
     }
     if (c.clients.arrivalRatePerMinute <= 0.0) {
         throw ConfigError("arrival_rate_per_minute должен быть больше нуля");
@@ -106,6 +117,15 @@ void validate(const Config& c) {
     if (c.ui.refreshHz < 1 || c.ui.refreshHz > 60) {
         throw ConfigError("ui.refresh_hz должен быть в диапазоне 1..60");
     }
+    // Границы сцены. fps: ниже 5 анимация разваливается на слайды, выше 30 —
+    // бессмысленная нагрузка (см. docs/scene_frame_budget.md). rows: ниже 10
+    // не влезает корпус банкомата с подписями, выше 14 сцена съедает таблицу.
+    if (c.ui.sceneFps < 5 || c.ui.sceneFps > 30) {
+        throw ConfigError("ui.scene_fps должен быть в диапазоне 5..30");
+    }
+    if (c.ui.sceneRows < 10 || c.ui.sceneRows > 14) {
+        throw ConfigError("ui.scene_rows должен быть в диапазоне 10..14");
+    }
     if (c.simulation.timeScale <= 0.0) {
         throw ConfigError("time_scale должен быть больше нуля");
     }
@@ -131,7 +151,11 @@ Config ConfigLoader::loadFromString(const std::string& jsonText) {
     json j;
     try {
         j = json::parse(jsonText, nullptr, true, true);
-    } catch (const json::parse_error& e) {
+    } catch (const json::exception& e) {
+        // Не только parse_error: переполнение числового литерала (например,
+        // «3.0e999») nlohmann кидает как json::out_of_range, который от
+        // parse_error НЕ наследуется — без широкого catch он улетал бы в main
+        // как «непредвиденная ошибка» вместо осмысленной ошибки конфигурации.
         throw ConfigError(std::string("некорректный JSON: ") + e.what());
     }
     if (!j.is_object()) {
@@ -173,6 +197,11 @@ Config ConfigLoader::loadFromString(const std::string& jsonText) {
                 c.clients.patienceSeconds.min = r.value("min", c.clients.patienceSeconds.min);
                 c.clients.patienceSeconds.max = r.value("max", c.clients.patienceSeconds.max);
             }
+            if (cl.contains("walk_seconds")) {
+                const auto& r = cl.at("walk_seconds");
+                c.clients.walkSeconds.min = r.value("min", c.clients.walkSeconds.min);
+                c.clients.walkSeconds.max = r.value("max", c.clients.walkSeconds.max);
+            }
         }
 
         if (j.contains("service_time")) {
@@ -210,6 +239,10 @@ Config ConfigLoader::loadFromString(const std::string& jsonText) {
             c.ui.eventsTail = u.value("events_tail", c.ui.eventsTail);
             c.ui.showProgressBars = u.value("show_progress_bars", c.ui.showProgressBars);
             c.ui.color = u.value("color", c.ui.color);
+            c.ui.scene = u.value("scene", c.ui.scene);
+            c.ui.sceneFps = u.value("scene_fps", c.ui.sceneFps);
+            c.ui.sceneRows = u.value("scene_rows", c.ui.sceneRows);
+            c.ui.sceneEffects = u.value("scene_effects", c.ui.sceneEffects);
         }
 
         if (j.contains("logging")) {

@@ -18,6 +18,7 @@
 #include "atmsim/config/ConfigLoader.hpp"
 #include "atmsim/console/AdminConsole.hpp"
 #include "atmsim/console/Signals.hpp"
+#include "atmsim/console/SplashScreen.hpp"
 #include "atmsim/engine/AtmEngine.hpp"
 #include "atmsim/engine/ScopedEngineThreads.hpp"
 #include "atmsim/reporting/Logger.hpp"
@@ -33,6 +34,7 @@ struct RunResult {
     AdminConsole::RunOutcome outcome;
     StatsSnapshot stats;
     AtmSnapshot atm;
+    UiConfig ui;  // ui-настройки после прогона (scene on|off переживает restart)
 };
 
 // Баннер при старте: имя/версия, путь конфига, число клиентов, файл лога.
@@ -75,6 +77,12 @@ void printFinalReport(const StatsSnapshot& st, const AtmSnapshot& s, const Confi
 // std::terminate на joinable-потоке. Финальные снимки снимаем ПОСЛЕ остановки —
 // для детерминированного итога при фиксированном seed (§5).
 RunResult runSingleSimulation(const Config& runCfg, Logger& logger) {
+    // Экран загрузки «самотест банкомата» — ДО создания движка и его потоков:
+    // симуляция (включая отсчёт аптайма и приход первого клиента с интервалом
+    // 0.0) начинается только после заставки, поэтому и при рестарте старт
+    // прогона виден с самого начала. Вне TTY заставки нет; клавиша пропускает.
+    showSplash(runCfg);
+
     AtmEngine engine(runCfg, &logger);
     ScopedEngineThreads threads(engine);  // спавн engine.run()/generateArrivals()
 
@@ -88,7 +96,7 @@ RunResult runSingleSimulation(const Config& runCfg, Logger& logger) {
     }
 
     threads.stop();  // плавная остановка + join ДО снятия финальных снимков
-    return RunResult{outcome, engine.statsSnapshot(), engine.snapshot()};
+    return RunResult{outcome, engine.statsSnapshot(), engine.snapshot(), console.config().ui};
 }
 
 }  // namespace
@@ -115,12 +123,17 @@ int main(int argc, char** argv) {
 
         // Цикл прогонов: команда restart пересоздаёт движок «с нуля» с новым seed
         // (тот же seed дал бы идентичный прогон, §5). Выходим на Quit.
+        // ui-настройки, изменённые командами на лету (scene on|off), переносим
+        // из прогона в прогон — restart не должен молча откатывать их к файлу.
         auto seed = cfg.simulation.randomSeed;
+        UiConfig uiState = cfg.ui;
         for (int runIndex = 1; ; ++runIndex, ++seed) {
             Config runCfg = cfg;
             runCfg.simulation.randomSeed = seed;
+            runCfg.ui = uiState;
 
             const RunResult r = runSingleSimulation(runCfg, logger);
+            uiState = r.ui;
             logger.info("Итог прогона #" + std::to_string(runIndex) + ": обслужено " +
                         std::to_string(r.stats.served) + ", ушли " + std::to_string(r.stats.left));
 

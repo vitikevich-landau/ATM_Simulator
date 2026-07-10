@@ -105,6 +105,42 @@ TEST(config_rejects_zero_amount_min) {
     CHECK(threw);
 }
 
+// walk_seconds (время подхода клиента к банкомату) читается; по умолчанию
+// 0/0 — подход мгновенный (поведение до фичи, чтобы программные конфиги и
+// тесты не меняли семантику незаметно; «живое» значение — в default_config.json).
+TEST(config_reads_walk_seconds) {
+    const Config def = ConfigLoader::loadFromString("{}");
+    CHECK_EQ(def.clients.walkSeconds.min, 0.0);
+    CHECK_EQ(def.clients.walkSeconds.max, 0.0);
+
+    const Config c = ConfigLoader::loadFromString(
+        R"({"clients": {"walk_seconds": {"min": 1.5, "max": 3.0}}})");
+    CHECK_EQ(c.clients.walkSeconds.min, 1.5);
+    CHECK_EQ(c.clients.walkSeconds.max, 3.0);
+}
+
+// walk_seconds: отрицательное время и min > max — ошибки конфигурации
+// (диапазон уходит в uniform_real_distribution, precondition которого min <= max).
+TEST(config_rejects_bad_walk_seconds) {
+    bool threwNegative = false;
+    try {
+        ConfigLoader::loadFromString(
+            R"({"clients": {"walk_seconds": {"min": -1.0, "max": 2.0}}})");
+    } catch (const ConfigError&) {
+        threwNegative = true;
+    }
+    CHECK(threwNegative);
+
+    bool threwInverted = false;
+    try {
+        ConfigLoader::loadFromString(
+            R"({"clients": {"walk_seconds": {"min": 3.0, "max": 1.0}}})");
+    } catch (const ConfigError&) {
+        threwInverted = true;
+    }
+    CHECK(threwInverted);
+}
+
 // Отрицательный stddev недопустим при любом распределении (уходит в
 // std::normal_distribution, precondition которого stddev > 0).
 TEST(config_rejects_negative_stddev) {
@@ -222,4 +258,18 @@ TEST(config_rejects_too_large_refresh_hz) {
     // Граница диапазона включительно: 60 — валидно.
     const Config c = ConfigLoader::loadFromString(R"({"ui": {"refresh_hz": 60}})");
     CHECK_EQ(c.ui.refreshHz, 60);
+}
+
+// Переполнение числового литерала («3.0e999» -> json::out_of_range, который НЕ
+// parse_error) тоже должно приходить наружу как ConfigError, а не как
+// «непредвиденная ошибка» в main.
+TEST(config_rejects_overflowing_number_as_config_error) {
+    bool threw = false;
+    try {
+        ConfigLoader::loadFromString(
+            R"({"clients": {"walk_seconds": {"min": 1.5, "max": 3.0e999}}})");
+    } catch (const ConfigError&) {
+        threw = true;
+    }
+    CHECK(threw);
 }

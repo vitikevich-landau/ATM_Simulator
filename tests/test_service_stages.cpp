@@ -237,3 +237,119 @@ TEST(engine_service_progress_respects_time_scale) {
     eng.join();
     arr.join();
 }
+
+// ПОДХОД к банкомату (clients.walk_seconds): пока клиент идёт, снимок отдаёт
+// approaching/approachProgress, а этап ПУСТ — обслуживание не началось; пауза
+// замораживает прогресс подхода (§4.6); когда клиент дошёл — поля подхода
+// гаснут и появляется обычный этап с прогрессом обслуживания. Время подхода
+// фиксируем 60/60 с, чтобы за время проверок клиент гарантированно «шёл».
+TEST(engine_approach_phase_delays_service) {
+    Config cfg;
+    cfg.clients.count = 1;
+    cfg.clients.arrivalRatePerMinute = 1000.0;               // клиент приходит сразу
+    cfg.clients.patienceSeconds = SecondsRange{1000000, 1000000};
+    cfg.clients.walkSeconds = WalkSecondsRange{60.0, 60.0};  // долгий подход
+    cfg.serviceTime.distribution = ServiceDistribution::Uniform;
+    cfg.serviceTime.minSeconds = 60.0;
+    cfg.serviceTime.maxSeconds = 60.0;
+    AtmEngine engine(cfg);
+
+    std::thread eng([&] { engine.run(); });
+    std::thread arr([&] { engine.generateArrivals(); });
+
+    // Дожидаемся, пока клиент будет взят из очереди (начнёт подход).
+    const auto deadline = std::chrono::steady_clock::now() + 3s;
+    while (std::chrono::steady_clock::now() < deadline &&
+           !engine.snapshot().currentClientId.has_value()) {
+        std::this_thread::sleep_for(1ms);
+    }
+
+    const AtmSnapshot s1 = engine.snapshot();
+    CHECK(s1.currentClientId.has_value());
+    CHECK(s1.approaching);
+    CHECK(std::fabs(s1.approachPlannedModelSec - 60.0) < 1e-9);
+    CHECK(s1.approachProgress >= 0.0);
+    CHECK(s1.approachProgress <= 1.0);
+    // Обслуживание НЕ началось: этапа нет, сервисный прогресс нулевой.
+    CHECK(!s1.currentStage.has_value());
+    CHECK_EQ(s1.serviceProgress, 0.0);
+    CHECK_EQ(s1.servicePlannedModelSec, 0.0);
+
+    // Прогресс подхода непрерывен: чуть позже он строго больше.
+    std::this_thread::sleep_for(200ms);
+    const AtmSnapshot s2 = engine.snapshot();
+    CHECK(s2.approaching);
+    CHECK(s2.approachProgress > s1.approachProgress);
+
+    // Пауза замораживает подход, как и таймер службы (§4.6). Ждём заморозку
+    // поллингом с дедлайном (см. комментарий в
+    // engine_snapshot_exposes_service_stage_and_progress: фиксированный sleep
+    // был бы флейком под TSan).
+    CHECK(engine.requestPause());
+    AtmSnapshot p1{}, p2{};
+    const auto pauseDeadline = std::chrono::steady_clock::now() + 5s;
+    for (;;) {
+        p1 = engine.snapshot();
+        std::this_thread::sleep_for(30ms);
+        p2 = engine.snapshot();
+        if (p1.approachProgress == p2.approachProgress) break;
+        if (std::chrono::steady_clock::now() > pauseDeadline) break;
+    }
+    CHECK(p1.approaching);
+    CHECK_EQ(p1.approachProgress, p2.approachProgress);
+    CHECK(!p1.currentStage.has_value());
+
+    engine.requestResume();
+    engine.requestStop();
+    eng.join();
+    arr.join();
+
+    // Остановка прерывает подход, но операцию движок доводит до конца (§4.6:
+    // клиент уже взят из очереди, начатое не бросаем) — клиент обслужен,
+    // поля подхода и обслуживания сброшены.
+    const AtmSnapshot done = engine.snapshot();
+    CHECK(!done.currentClientId.has_value());
+    CHECK(!done.approaching);
+    CHECK_EQ(done.approachProgress, 0.0);
+    CHECK_EQ(done.approachPlannedModelSec, 0.0);
+    CHECK_EQ(done.totalServed, static_cast<std::uint64_t>(1));
+}
+
+// Подход завершается и уступает место обслуживанию: с коротким walk-временем
+// вскоре после взятия клиента снимок показывает обычный этап, а поля подхода
+// погашены. Заодно проверяется арифметика time_scale для подхода (та же, что
+// у обслуживания: реальное время = модельное / time_scale): 10 модельных
+// секунд подхода при time_scale = 20 — это 0.5 реальной секунды.
+TEST(engine_approach_completes_and_service_starts) {
+    Config cfg;
+    cfg.clients.count = 1;
+    cfg.clients.arrivalRatePerMinute = 1000.0;               // клиент приходит сразу
+    cfg.clients.patienceSeconds = SecondsRange{1000000, 1000000};
+    cfg.clients.walkSeconds = WalkSecondsRange{10.0, 10.0};
+    cfg.serviceTime.distribution = ServiceDistribution::Uniform;
+    cfg.serviceTime.minSeconds = 600.0;   // долгое обслуживание: не успеет кончиться
+    cfg.serviceTime.maxSeconds = 600.0;
+    cfg.simulation.timeScale = 20.0;
+    AtmEngine engine(cfg);
+
+    std::thread eng([&] { engine.run(); });
+    std::thread arr([&] { engine.generateArrivals(); });
+
+    // Дожидаемся ПЕРЕХОДА к обслуживанию: появился этап — подход закончился.
+    const auto deadline = std::chrono::steady_clock::now() + 5s;
+    while (std::chrono::steady_clock::now() < deadline &&
+           !engine.snapshot().currentStage.has_value()) {
+        std::this_thread::sleep_for(1ms);
+    }
+
+    const AtmSnapshot s = engine.snapshot();
+    CHECK(s.currentClientId.has_value());
+    CHECK(s.currentStage.has_value());
+    CHECK(!s.approaching);
+    CHECK_EQ(s.approachPlannedModelSec, 0.0);
+    CHECK(std::fabs(s.servicePlannedModelSec - 600.0) < 1e-9);
+
+    engine.requestStop();
+    eng.join();
+    arr.join();
+}

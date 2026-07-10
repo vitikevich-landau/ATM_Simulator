@@ -29,6 +29,11 @@ public:
     // stop/EOF (RunOutcome::Quit) или команда restart (RunOutcome::Restart).
     RunOutcome run();
 
+    // Конфигурация консоли ПОСЛЕ прогона: команды вроде scene on|off мутируют
+    // локальную копию cfg_, и main переносит её ui-часть в следующий прогон
+    // (иначе restart молча откатывал бы включённую на лету сцену к файлу).
+    const Config& config() const { return cfg_; }
+
 private:
     // Что делать после выхода из одного из режимов.
     enum class Next { Command, Live, Quit, Restart };

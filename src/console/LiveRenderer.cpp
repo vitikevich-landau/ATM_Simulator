@@ -5,9 +5,12 @@
 #include <cmath>
 #include <iomanip>
 #include <iostream>
+#include <optional>
 #include <sstream>
 
 #include "atmsim/console/Terminal.hpp"
+#include "atmsim/console/scene/SceneCanvas.hpp"
+#include "atmsim/console/scene/SceneComposer.hpp"
 #include "atmsim/core/Money.hpp"
 
 namespace atmsim {
@@ -79,15 +82,64 @@ std::string fit(const std::string& s, int width) {
 
 }  // namespace
 
-LiveRenderer::LiveRenderer(AtmEngine& engine, const Config& cfg)
+LiveRenderer::LiveRenderer(AtmEngine& engine, const Config& cfg, int forcedWidth,
+                           int forcedHeight)
     : engine_(engine), cfg_(cfg) {
     // Размеры терминала — один раз при создании (ресайз на лету — v2).
-    width_ = std::clamp(Terminal::width(), 60, 200);
-    termHeight_ = std::clamp(Terminal::height(), 16, 60);
+    // Принудительные размеры (>0) — только для тестов, см. LiveRenderer.hpp.
+    width_ = std::clamp(forcedWidth > 0 ? forcedWidth : Terminal::width(), 60, 200);
+    termHeight_ = std::clamp(forcedHeight > 0 ? forcedHeight : Terminal::height(), 16, 60);
+
+    // Сцена включается, только если она СО ВСЕЙ таблицей помещается в терминал
+    // (формула — в sceneFits; консоль проверяет её же перед scene on). Не
+    // влезло — молча остаёмся в таблице: высота кадра постоянна в обоих
+    // случаях (§4.8.5).
+    sceneRows_ = std::clamp(cfg_.ui.sceneRows, scene::layout::kMinSceneRows,
+                            scene::layout::kMaxSceneRows);
+    sceneActive_ = cfg_.ui.scene && sceneFits(cfg_, width_, termHeight_);
+    if (sceneActive_) {
+        presenter_ = std::make_unique<scene::ScenePresenter>(width_, sceneRows_,
+                                                             cfg_.ui.sceneEffects,
+                                                             cfg_.simulation.timeScale);
+    }
+
     height_ = static_cast<int>(composeLines().size());
 }
 
+bool LiveRenderer::sceneFits(const Config& cfg, int termWidth, int termHeight) {
+    // Те же клампы, что в конструкторе (уже приведённые значения проходят
+    // клампы без изменений). Бюджет тела таблицы в scene-режиме: высота
+    // терминала минус шапка (2), три разделителя (3), подвал (1), строка
+    // ввода с запасом (2) и сама сцена. Минимум 12 строк тела = очередь
+    // 4+5 служебных ИЛИ лента 3+9 служебных — меньше таблица теряет смысл.
+    const int w = std::clamp(termWidth > 0 ? termWidth : Terminal::width(), 60, 200);
+    const int h = std::clamp(termHeight > 0 ? termHeight : Terminal::height(), 16, 60);
+    const int rows = std::clamp(cfg.ui.sceneRows, scene::layout::kMinSceneRows,
+                                scene::layout::kMaxSceneRows);
+    return w >= 84 && (h - 8 - rows) >= 12;
+}
+
+int LiveRenderer::frameRate() const {
+    const int hz = std::clamp(cfg_.ui.refreshHz, 1, 60);
+    if (!sceneActive_) return hz;
+    // Со сценой кадры идут не реже scene_fps И не реже refresh_hz: дифф-рендер
+    // делает кадры без изменений бесплатными, зато снимки движка честно
+    // опрашиваются на refresh_hz (обещание конфига), а анимации — плавные.
+    return std::max(std::clamp(cfg_.ui.sceneFps, 5, 30), hz);
+}
+
 std::vector<std::string> LiveRenderer::composeLines() const {
+    // Публичный вариант (тесты, первый расчёт высоты): снимаем свежие снимки
+    // и делегируем сборку. Render-цикл сюда не ходит — у него кэш.
+    OperationFilter feedFilter;
+    feedFilter.last = static_cast<std::size_t>(std::clamp(cfg_.ui.eventsTail, 0, 50));
+    return composeLinesFrom(engine_.snapshot(), engine_.statsSnapshot(),
+                            engine_.queueSnapshot(), engine_.operations(feedFilter));
+}
+
+std::vector<std::string> LiveRenderer::composeLinesFrom(
+    const AtmSnapshot& s, const StatsSnapshot& st, const std::vector<ClientSnapshot>& q,
+    const std::vector<OperationRecord>& ops) const {
     const bool color = cfg_.ui.color;
     auto C = [color](const char* code) { return color ? std::string(code) : std::string(); };
     auto R = [color] { return color ? std::string(ansi::reset()) : std::string(); };
@@ -100,23 +152,28 @@ std::vector<std::string> LiveRenderer::composeLines() const {
         return std::string{};
     };
 
-    const AtmSnapshot s = engine_.snapshot();
-    const StatsSnapshot st = engine_.statsSnapshot();
-    const std::vector<ClientSnapshot> q = engine_.queueSnapshot();
     // Длина ленты последних операций — из конфига (ui.events_tail), с разумным
     // потолком, чтобы битый конфиг не растянул кадр до абсурда. Значение постоянно
     // в пределах запуска, поэтому высота кадра остаётся стабильной (§4.8.5).
-    const int feedRows = std::clamp(cfg_.ui.eventsTail, 0, 50);
-    OperationFilter feedFilter;
-    feedFilter.last = static_cast<std::size_t>(feedRows);
-    const std::vector<OperationRecord> ops = engine_.operations(feedFilter);
+    // В scene-режиме лента дополнительно ужимается под остаток высоты после
+    // сценической полосы (9 = строки статистики над лентой), но не короче 3.
+    // ops может содержать БОЛЬШЕ записей, чем нужно ленте (кэш render-цикла
+    // берёт с запасом для судеб сцены) — лента показывает feedRows новейших.
+    const int sceneBodyBudget = termHeight_ - 8 - sceneRows_;
+    const int feedRows = sceneActive_
+        ? std::clamp(std::min(cfg_.ui.eventsTail, sceneBodyBudget - 9), 3, 50)
+        : std::clamp(cfg_.ui.eventsTail, 0, 50);
 
     const std::string cur = cfg_.atm.currency;
 
     // Геометрия: левая колонка (очередь) шире, правая — статистика/лента.
     const int leftW = std::clamp(width_ - 42, 40, 54);
     const int rightW = width_ - leftW - 3;              // 3 = " │ "
-    const int queueVisible = std::max(4, termHeight_ - 13);
+    // Число слотов очереди: без сцены — вся высота терминала минус служебные
+    // строки; со сценой — остаток бюджета тела (5 = строки левой колонки
+    // над слотами и под ними). Оба значения постоянны в пределах сессии.
+    const int queueVisible = sceneActive_ ? std::clamp(sceneBodyBudget - 5, 4, 99)
+                                          : std::max(4, termHeight_ - 13);
 
     // Цвет маркера состояния.
     const char* sc = ansi::grey();
@@ -133,8 +190,9 @@ std::vector<std::string> LiveRenderer::composeLines() const {
     // === Полноширинная шапка ===
     {
         std::ostringstream os;
+        // В шапке — фактическая частота КАДРОВ (со сценой она выше refresh_hz).
         os << C(ansi::bold()) << "ATM Simulator" << R()
-           << "   uptime " << hms(s.uptimeSeconds) << "   [LIVE " << cfg_.ui.refreshHz << " fps]";
+           << "   uptime " << hms(s.uptimeSeconds) << "   [LIVE " << frameRate() << " fps]";
         L.push_back(fit(os.str(), width_));
     }
     {
@@ -168,6 +226,24 @@ std::vector<std::string> LiveRenderer::composeLines() const {
         L.push_back(fit(os.str(), width_));
     }
 
+    // === Сценическая полоса (feature/scene): банкомат и человечки ===
+    // Полоса живёт МЕЖДУ шапкой и таблицей: сцена показывает «как это выглядит»,
+    // таблица ниже — точные цифры (решение владельца: цифры не жертвуем).
+    // Высота полосы постоянна (sceneRows_), поэтому §4.8.5 не нарушается.
+    if (sceneActive_) {
+        L.push_back(C(ansi::grey()) + repeatUtf8("─", width_) + R());
+        scene::SceneCanvas canvas(width_, sceneRows_);
+        // Живые актёры презентера (двигаются между кадрами); пока он не сделал
+        // ни одного tick (первый кадр, тесты без tick) — статичная сцена по
+        // текущему снимку.
+        if (presenter_ && presenter_->hasTicked()) {
+            scene::composeScene(presenter_->view(), canvas);
+        } else {
+            scene::composeScene(scene::buildSceneView(s, q, width_), canvas);
+        }
+        for (std::string& line : canvas.toLines(color)) L.push_back(std::move(line));
+    }
+
     // === Разделитель с «шапкой» колонок (┬) ===
     L.push_back(C(ansi::grey()) + repeatUtf8("─", leftW + 1) + "┬" +
                 repeatUtf8("─", width_ - leftW - 2) + R());
@@ -188,9 +264,19 @@ std::vector<std::string> LiveRenderer::composeLines() const {
     // Строка «что делает клиент» (§4.8): тематический этап обслуживания и доля
     // отработанного времени. Пока никого не обслуживают, строка пуста — она
     // ВСЕГДА занимает ровно один слот, чтобы высота кадра не плавала (§4.8.5).
+    // Во время ПОДХОДА (clients.walk_seconds) этапа ещё нет — в том же слоте
+    // показываем путь клиента к банкомату с его собственным прогрессом.
     {
         std::ostringstream os;
-        if (s.currentClientId && s.currentStage) {
+        if (s.currentClientId && s.approaching) {
+            // Метка не длиннее 16 колонок: с полосой и «100%» строка должна
+            // влезать в минимальную левую колонку (40 колонок на терминале 60).
+            os << " └ " << C(ansi::cyan()) << "идёт к банкомату" << R() << ' ';
+            if (cfg_.ui.showProgressBars) {
+                os << '[' << C(ansi::cyan()) << bar(s.approachProgress, 10) << R() << "] ";
+            }
+            os << static_cast<int>(std::lround(s.approachProgress * 100.0)) << '%';
+        } else if (s.currentClientId && s.currentStage) {
             os << " └ " << C(ansi::cyan()) << to_string(*s.currentStage) << R() << ' ';
             // Полоса прогресса обслуживания — как и остальные полосы, только
             // при ui.show_progress_bars; процент показываем всегда.
@@ -296,54 +382,134 @@ std::vector<std::string> LiveRenderer::composeLines() const {
         L.push_back(fit(C(ansi::green()) + "✓ Симуляция завершена" + R() + C(ansi::grey()) +
                         "  —  restart: новый прогон · stop: выход" + R(), width_));
     } else {
+        // Подвал держим <= ~95 колонок, чтобы на ходовой ширине 100 хвост с
+        // «live off · stop» не обрезался; полный список команд — в help.
         L.push_back(fit(C(ansi::grey()) +
-                        "команды: pause · resume · maintenance N|stop · client N · queue · "
-                        "stats · export F · live off · stop" + R(), width_));
+                        "команды: pause · resume · maintenance N|stop · queue · stats · "
+                        "scene · live off · stop · help" + R(), width_));
     }
 
     return L;
 }
 
-void LiveRenderer::paintFrame() {
-    const std::vector<std::string> lines = composeLines();
+void LiveRenderer::paintFrame(const std::vector<std::string>& lines) {
+    // Дифф: в терминал уходят только изменившиеся строки (этап 5). Кадр без
+    // изменений не трогает терминал вовсе (и не дёргает outMutex_ — ввод
+    // пользователя не конкурирует с пустыми перерисовками).
+    const std::string body = differ_.diff(lines);
+    if (body.empty()) return;
+
     // Прячем курсор на время перерисовки (иначе, гоняя его по строкам кадра через
     // moveTo, мы бы видели его «пробег» по таблице). Рисуем дашборд, затем ЯВНО
     // ставим курсор в позицию ВВОДА (её сообщает консоль через setCursorTarget) и
     // показываем. Явная установка, а не save/restore, важна на переходах: после
     // clearScreen (старт live-режима, закрытие отчёта/очереди) сохранённая позиция
     // была бы (1,1) — курсор «прыгал» в таблицу, пока не перерисуется строка ввода.
-    std::string out = ansi::hideCursor();
-    for (std::size_t i = 0; i < lines.size(); ++i) {
-        out += ansi::moveTo(static_cast<int>(i) + 1, 1);
-        out += lines[i];
-        out += ansi::clearToLineEnd();
-    }
+    // Кадр обёрнут в synchronized output (DEC 2026): Windows Terminal показывает
+    // его атомарно, без полусобранных состояний; conhost молча игнорирует.
+    std::string out = ansi::syncBegin();
+    out += ansi::hideCursor();
+    out += body;
     out += ansi::moveTo(cursorRow_.load(), cursorCol_.load());
     out += ansi::showCursor();
+    out += ansi::syncEnd();
 
     std::lock_guard<std::mutex> lock(outMutex_);
     // Повторная проверка ПОД локом. Между «if(!paused_)» в renderLoop и этим
     // моментом мог стартовать overlay: showOverlay() выставляет paused_ и печатает
     // полноэкранный отчёт под ТЕМ ЖЕ outMutex_. Без этой проверки уже собранный
     // кадр дашборда затёр бы отчёт (или врезался бы в него). Если встали на паузу
-    // — молча пропускаем кадр.
-    if (paused_.load()) return;
+    // — пропускаем кадр И инвалидируем дифф: differ_ уже записал кадр как
+    // «отрисованный», хотя терминал его не получил.
+    if (paused_.load()) {
+        differ_.invalidate();
+        return;
+    }
     std::cout << out << std::flush;
 }
 
 void LiveRenderer::renderLoop() {
-    const int hz = (cfg_.ui.refreshHz > 0) ? cfg_.ui.refreshHz : 4;
-    const auto period = std::chrono::milliseconds(1000 / hz);
+    using clock = std::chrono::steady_clock;
+    // Разрешение таймера Windows -> 1 мс, но ТОЛЬКО при активной сцене: без
+    // неё кадры идут на refresh_hz (2-10), где штатной гранулярности ~15.6 мс
+    // хватает, а общесистемный 1-мс таймер зря ел бы батарею на долгих прогонах.
+    std::optional<TimerResolutionGuard> timerGuard;
+    if (sceneActive_) timerGuard.emplace();
+
+    // Частоты РАЗДЕЛЕНЫ: снимки движка опрашиваются на refresh_hz (не грузим
+    // его мьютексы чаще, чем осмысленно меняются данные), кадры рисуются на
+    // frameRate() из кэша — анимации между снимками остаются плавными. Без
+    // сцены кадры и снимки идут на одной частоте, как раньше.
+    const int hz = std::clamp(cfg_.ui.refreshHz, 1, 60);
+    const int fps = frameRate();
+    const auto framePeriod = std::chrono::microseconds(1'000'000 / fps);
+    const auto snapPeriod = std::chrono::microseconds(1'000'000 / hz);
+
+    const auto start = clock::now();
+    long long frame = 0;
+    auto lastSnap = start - snapPeriod;  // первый кадр всегда со свежими снимками
+
     while (running_.load()) {
-        if (!paused_.load()) paintFrame();
-        // Прерываемый сон: проснёмся раньше по stop() (running_ станет false).
+        if (!paused_.load()) {
+            // Заявка от resume(): полный repaint (overlay затёр экран) и
+            // мгновенная расстановка актёров. Выполняется ЗДЕСЬ, в render-
+            // потоке — differ_ и presenter_ не потокобезопасны.
+            if (teleportOnResume_.exchange(false)) {
+                differ_.invalidate();
+                if (presenter_) presenter_->requestTeleport();
+            }
+
+            const auto nowTp = clock::now();
+            if (nowTp - lastSnap >= snapPeriod) {
+                cachedSnap_ = engine_.snapshot();
+                cachedStats_ = engine_.statsSnapshot();
+                cachedQueue_ = engine_.queueSnapshot();
+                // Один хвост ленты и для таблицы, и для судеб сцены. Запас «не
+                // меньше 12 записей» нужен только грейс-логике презентера — без
+                // сцены берём ровно столько, сколько просит лента (в т.ч. 0).
+                const int feedWant = std::clamp(cfg_.ui.eventsTail, 0, 50);
+                OperationFilter f;
+                f.last = static_cast<std::size_t>(
+                    presenter_ ? std::max(feedWant, 12) : feedWant);
+                cachedOps_ = engine_.operations(f);
+                lastSnap = nowTp;
+            }
+
+            if (presenter_) {
+                const double nowSec =
+                    std::chrono::duration<double>(nowTp.time_since_epoch()).count();
+                // Возраст кэша снимков: по нему презентер экстраполирует остаток
+                // подхода между опросами и понимает, свежий ли снимок (грейс
+                // судьбы LeavePending тратится только на свежих).
+                const double snapAgeSec = std::chrono::duration<double>(nowTp - lastSnap).count();
+                presenter_->tick(cachedSnap_, cachedQueue_, nowSec, cachedOps_,
+                                 snapAgeSec > 0.0 ? snapAgeSec : 0.0);
+            }
+            paintFrame(composeLinesFrom(cachedSnap_, cachedStats_, cachedQueue_, cachedOps_));
+        }
+
+        // Дедлайновый пейсинг: следующий кадр строго в start + N*period (а не
+        // «сон на номинал после работы» — тот накапливает дрейф). Опоздали
+        // больше чем на кадр — не гонимся за прошедшими дедлайнами (drop-frame),
+        // а перепланируемся от текущего момента.
+        ++frame;
+        auto deadline = start + framePeriod * frame;
+        const auto lateBy = clock::now() - deadline;
+        if (lateBy > framePeriod) {
+            frame += lateBy / framePeriod;
+            deadline = start + framePeriod * frame;
+        }
+        // Прерываемое ожидание: проснёмся раньше по stop() (running_ = false).
         std::unique_lock<std::mutex> lock(sleepMutex_);
-        sleepCv_.wait_for(lock, period, [this] { return !running_.load(); });
+        sleepCv_.wait_until(lock, deadline, [this] { return !running_.load(); });
     }
 }
 
 void LiveRenderer::start() {
     if (thread_.joinable()) return;  // уже запущен
+    // Экран мог быть очищен/перерисован между сессиями start/stop — первый
+    // кадр нового запуска обязан быть полным.
+    differ_.invalidate();
     running_.store(true);
     thread_ = std::thread([this] { renderLoop(); });
 }
@@ -357,6 +523,13 @@ void LiveRenderer::stop() {
 // Деструктор определён inline в заголовке (см. LiveRenderer.hpp) — здесь его нет.
 
 void LiveRenderer::pause() { paused_.store(true); }
-void LiveRenderer::resume() { paused_.store(false); }
+
+void LiveRenderer::resume() {
+    // Overlay затёр экран, а за время паузы состояние могло уехать далеко:
+    // просим render-поток сделать полный repaint и расставить актёров сцены
+    // мгновенно (флаг — потому что differ_/presenter_ принадлежат ему).
+    teleportOnResume_.store(true);
+    paused_.store(false);
+}
 
 }  // namespace atmsim

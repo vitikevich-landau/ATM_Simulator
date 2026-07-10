@@ -10,6 +10,13 @@
 #include <conio.h>   // _getch — чтение клавиши без эха/Enter
 #include <io.h>
 #include <windows.h>
+
+#include <timeapi.h>  // timeBeginPeriod/timeEndPeriod (TimerResolutionGuard)
+#ifdef _MSC_VER
+// Линкуем winmm прямо из исходника: сборка в VS не требует ручной настройки.
+// Для CMake-сборок зависимость продублирована в CMakeLists (if(WIN32)).
+#pragma comment(lib, "winmm.lib")
+#endif
 #else
 #include <sys/ioctl.h>
 #include <sys/select.h>  // select — «есть ли ещё байты» при разборе ESC-последовательностей
@@ -28,6 +35,22 @@ int envSize(const char* name) {
     return 0;
 }
 }  // namespace
+
+TimerResolutionGuard::TimerResolutionGuard() {
+#ifdef _WIN32
+    // TIMERR_NOERROR == 0; при отказе (редкость) просто живём с 15.6 мс.
+    active_ = (timeBeginPeriod(1) == TIMERR_NOERROR);
+#endif
+}
+
+TimerResolutionGuard::~TimerResolutionGuard() {
+#ifdef _WIN32
+    if (active_) timeEndPeriod(1);
+#endif
+    // POSIX: поле active_ остаётся false — предупреждение об unused-private
+    // не возникает, потому что поле читается в деструкторе Windows-ветки.
+    (void)active_;
+}
 
 bool Terminal::isStdoutTty() {
 #ifdef _WIN32
@@ -130,6 +153,18 @@ bool stdinPending(int ms) {
 }
 }  // namespace
 #endif
+
+bool Terminal::inputPending() {
+#ifdef _WIN32
+    // Готовность символьной клавиши для _getch — тот же критерий, что в
+    // readKeyTimeout (события мыши/фокуса _kbhit не считает).
+    return _kbhit() != 0;
+#else
+    // В каноническом (cooked) режиме select сигналит по готовой строке, в
+    // raw — по любому байту; заставке важен именно первый случай.
+    return stdinPending(0);
+#endif
+}
 
 Key readKey(char& ch) {
     ch = 0;
