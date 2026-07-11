@@ -399,6 +399,7 @@ void ScenePresenter::rebuildView(const AtmSnapshot& atm, const std::vector<Clien
         chat[rightId] = {role == ChatRole::RightSpeaks, -2};
     }
 
+    view_.actors.reserve(actors_.size());  // без цепочки реаллокаций push_back
     for (const auto& [id, a] : actors_) {
         SceneActorView av;
         const double x = posAt(a.tween, now);
@@ -447,15 +448,20 @@ void ScenePresenter::rebuildView(const AtmSnapshot& atm, const std::vector<Clien
                 break;
             case ActorState::WalkIn:
             case ActorState::Advance:
-            case ActorState::QueueIdle:
+            case ActorState::QueueIdle: {
+                // По одному поиску на ключ (find вместо count + operator[]): и
+                // быстрее, и без риска тихой вставки в map через operator[].
+                const auto nervIt = nervous.find(id);
+                const bool isNervous = nervIt != nervous.end() && nervIt->second;
+                const auto chatIt = chat.find(id);
                 if (moving) {
                     av.pose = walkFrame;
-                } else if (nervous.count(id) != 0 && nervous[id]) {
+                } else if (isNervous) {
                     av.pose = pickNervousPose(id, now);
-                } else if (chat.count(id) != 0) {
+                } else if (chatIt != chat.end()) {
                     // Болтовня: сближение к собеседнику, говорящий жестикулирует
                     // и получает пузырёк речи над головой.
-                    const ChatInfo& ci = chat[id];
+                    const ChatInfo& ci = chatIt->second;
                     av.x += ci.lean;
                     av.pose = pickChatPose(id, ci.speaking, now);
                     if (ci.speaking) av.chatBubble = chatBubble(now);
@@ -464,8 +470,9 @@ void ScenePresenter::rebuildView(const AtmSnapshot& atm, const std::vector<Clien
                     // своя фаза (хэш от id, без RNG).
                     av.pose = pickIdlePose(id, now);
                 }
-                av.nervous = nervous.count(id) != 0 && nervous[id];
+                av.nervous = isNervous;
                 break;
+            }
         }
         view_.actors.push_back(std::move(av));
     }
