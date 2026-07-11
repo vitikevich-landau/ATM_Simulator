@@ -1,0 +1,583 @@
+<title>ATM Simulator — карта для изучающего</title>
+<style>
+  /* ── Токены: фосфорный терминал (тёмная) / прохладная бумага (светлая) ───── */
+  :root {
+    color-scheme: light dark;
+    --bg:        #eef1f0;
+    --bg-panel:  #f7f9f8;
+    --bg-sunken: #e5e9e8;
+    --ink:       #16211f;
+    --ink-soft:  #4a5754;
+    --ink-faint: #7a8a86;
+    --rule:      #cfd8d5;
+    --rule-soft: #dde3e1;
+    --accent:    #0e8f9a;   /* ATM-cyan: цвет «обслуживается» в самом коде */
+    --accent-ink:#0b6b73;
+    --green:     #2f8f43;   /* базовый / OK */
+    --amber:     #a9781a;   /* средний */
+    --cyan:      #0e8f9a;   /* продвинутый */
+    --red:       #c23b34;   /* слабости / FAIL */
+    --blue:      #3a6fb0;
+    --shadow:    0 1px 0 rgba(0,0,0,.03), 0 10px 30px -18px rgba(16,40,38,.35);
+    --mono: ui-monospace, "Cascadia Code", "JetBrains Mono", "SF Mono", Menlo, Consolas, monospace;
+    --sans: system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg:        #0e1413;
+      --bg-panel:  #141d1c;
+      --bg-sunken: #0a1010;
+      --ink:       #d3e0dd;
+      --ink-soft:  #97a8a4;
+      --ink-faint: #63736f;
+      --rule:      #24312f;
+      --rule-soft: #1a2523;
+      --accent:    #22c1cf;
+      --accent-ink:#7fe3ec;
+      --green:     #46c465;
+      --amber:     #d6a635;
+      --cyan:      #22c1cf;
+      --red:       #ef5f57;
+      --blue:      #63a0e6;
+      --shadow:    0 0 0 1px rgba(255,255,255,.02), 0 18px 40px -22px rgba(0,0,0,.7);
+    }
+  }
+  :root[data-theme="light"] {
+    color-scheme: light;
+    --bg:#eef1f0; --bg-panel:#f7f9f8; --bg-sunken:#e5e9e8; --ink:#16211f; --ink-soft:#4a5754;
+    --ink-faint:#7a8a86; --rule:#cfd8d5; --rule-soft:#dde3e1; --accent:#0e8f9a; --accent-ink:#0b6b73;
+    --green:#2f8f43; --amber:#a9781a; --cyan:#0e8f9a; --red:#c23b34; --blue:#3a6fb0;
+    --shadow:0 1px 0 rgba(0,0,0,.03), 0 10px 30px -18px rgba(16,40,38,.35);
+  }
+  :root[data-theme="dark"] {
+    color-scheme: dark;
+    --bg:#0e1413; --bg-panel:#141d1c; --bg-sunken:#0a1010; --ink:#d3e0dd; --ink-soft:#97a8a4;
+    --ink-faint:#63736f; --rule:#24312f; --rule-soft:#1a2523; --accent:#22c1cf; --accent-ink:#7fe3ec;
+    --green:#46c465; --amber:#d6a635; --cyan:#22c1cf; --red:#ef5f57; --blue:#63a0e6;
+    --shadow:0 0 0 1px rgba(255,255,255,.02), 0 18px 40px -22px rgba(0,0,0,.7);
+  }
+
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; background: var(--bg); color: var(--ink);
+    font-family: var(--sans); font-size: 16px; line-height: 1.6;
+    -webkit-font-smoothing: antialiased;
+  }
+  .wrap { max-width: 1080px; margin: 0 auto; padding: 0 24px; }
+  a { color: var(--accent-ink); text-decoration: none; }
+  a:hover { text-decoration: underline; }
+
+  .eyebrow {
+    font-family: var(--mono); font-size: 12px; letter-spacing: .18em; text-transform: uppercase;
+    color: var(--ink-faint); margin: 0 0 10px;
+  }
+  h1,h2,h3 { text-wrap: balance; line-height: 1.15; margin: 0; }
+  code, .mono { font-family: var(--mono); }
+
+  /* ── Hero ───────────────────────────────────────────────────────────────── */
+  .hero { border-bottom: 1px solid var(--rule); background:
+      radial-gradient(120% 80% at 82% -10%, color-mix(in srgb, var(--accent) 9%, transparent), transparent 60%); }
+  .hero-inner { padding: 56px 0 44px; display: grid; grid-template-columns: 1.15fr .85fr; gap: 40px; align-items: center; }
+  .hero h1 { font-size: clamp(30px, 4.6vw, 52px); font-weight: 800; letter-spacing: -.01em; }
+  .hero h1 .cy { color: var(--accent); }
+  .prompt { font-family: var(--mono); color: var(--ink-faint); font-size: 14px; margin: 0 0 18px; }
+  .prompt .tick { color: var(--green); }
+  .lede { color: var(--ink-soft); font-size: 17px; max-width: 52ch; margin: 18px 0 24px; }
+  .statline { display: flex; flex-wrap: wrap; gap: 8px 10px; margin-top: 8px; }
+  .stat {
+    font-family: var(--mono); font-size: 12.5px; padding: 5px 10px; border-radius: 6px;
+    background: var(--bg-sunken); border: 1px solid var(--rule); color: var(--ink-soft);
+    font-variant-numeric: tabular-nums;
+  }
+  .stat b { color: var(--ink); font-weight: 700; }
+
+  /* ASCII-дашборд как в самом проекте */
+  .term {
+    font-family: var(--mono); font-size: clamp(9px, 1.35vw, 13px); line-height: 1.28;
+    background: var(--bg-sunken); border: 1px solid var(--rule); border-radius: 10px;
+    padding: 16px 18px; box-shadow: var(--shadow); color: var(--ink-soft);
+    white-space: pre; overflow-x: auto;
+  }
+  .term .g{color:var(--green);} .term .c{color:var(--cyan);} .term .y{color:var(--amber);}
+  .term .r{color:var(--red);} .term .b{color:var(--blue);} .term .dim{color:var(--ink-faint);}
+  .term .hd{color:var(--ink); font-weight:700;}
+
+  /* ── Секции ────────────────────────────────────────────────────────────── */
+  section { padding: 54px 0; border-bottom: 1px solid var(--rule); }
+  .sec-head { display: flex; align-items: baseline; gap: 14px; margin-bottom: 26px; flex-wrap: wrap; }
+  .sec-head h2 { font-size: clamp(22px, 3vw, 30px); font-weight: 750; letter-spacing: -.01em; }
+  .sec-head .rule { flex: 1; height: 0; border-top: 1px solid var(--rule); align-self: center; min-width: 40px; }
+  .sec-head .n { font-family: var(--mono); color: var(--accent); font-size: 13px; letter-spacing:.1em; }
+  .sec-intro { color: var(--ink-soft); max-width: 68ch; margin: -8px 0 28px; }
+
+  /* ── Диаграмма потока данных ───────────────────────────────────────────── */
+  .flow { display: grid; gap: 14px; }
+  .flow-row { display: flex; flex-wrap: wrap; gap: 12px; align-items: stretch; }
+  .node {
+    flex: 1 1 150px; background: var(--bg-panel); border: 1px solid var(--rule); border-radius: 10px;
+    padding: 14px 15px; box-shadow: var(--shadow); position: relative; min-width: 0;
+  }
+  .node .tag { font-family: var(--mono); font-size: 11px; letter-spacing:.12em; text-transform: uppercase; color: var(--ink-faint); }
+  .node h4 { margin: 4px 0 5px; font-size: 15.5px; }
+  .node p { margin: 0; font-size: 13.5px; color: var(--ink-soft); line-height: 1.5; }
+  .node .file { font-family: var(--mono); font-size: 11.5px; color: var(--accent-ink); margin-top: 8px; display: block; }
+  .node.writer { border-left: 3px solid var(--red); }
+  .node.bridge { border-left: 3px solid var(--amber); }
+  .node.reader { border-left: 3px solid var(--cyan); }
+  .flow-arrow { text-align: center; color: var(--ink-faint); font-family: var(--mono); font-size: 18px; letter-spacing: .3em; }
+  .threads { display:flex; flex-wrap:wrap; gap:10px; margin-top: 22px; }
+  .thread { font-family: var(--mono); font-size:12.5px; padding:8px 12px; border-radius:8px; background:var(--bg-sunken); border:1px solid var(--rule); }
+  .thread b{color:var(--ink);} .thread .dot{display:inline-block;width:8px;height:8px;border-radius:50%;margin-right:7px;vertical-align:1px;}
+
+  /* ── Карточки концепций ────────────────────────────────────────────────── */
+  .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(320px, 1fr)); gap: 16px; }
+  .card {
+    background: var(--bg-panel); border: 1px solid var(--rule); border-radius: 12px;
+    padding: 18px 18px 16px; box-shadow: var(--shadow); display: flex; flex-direction: column; gap: 10px;
+    border-top: 3px solid var(--lvl, var(--accent));
+  }
+  .card h3 { font-size: 16.5px; font-weight: 700; line-height: 1.25; }
+  .card .file {
+    font-family: var(--mono); font-size: 12px; color: var(--accent-ink);
+    background: color-mix(in srgb, var(--accent) 10%, transparent); align-self: flex-start;
+    padding: 3px 8px; border-radius: 5px;
+  }
+  .card p { margin: 0; font-size: 14px; color: var(--ink-soft); line-height: 1.55; }
+  .card .why { color: var(--ink); }
+  .note {
+    font-size: 13px; color: var(--ink-soft); background: var(--bg-sunken);
+    border-left: 2px solid var(--lvl, var(--accent)); border-radius: 0 6px 6px 0; padding: 9px 12px;
+  }
+  .note b { color: var(--ink); font-weight: 650; }
+  .lvl-tag {
+    margin-left: auto; font-family: var(--mono); font-size: 10.5px; letter-spacing: .1em; text-transform: uppercase;
+    color: var(--lvl); border: 1px solid color-mix(in srgb, var(--lvl) 45%, transparent); border-radius: 20px; padding: 2px 9px; white-space: nowrap;
+  }
+  .card-top { display: flex; align-items: center; gap: 10px; }
+  .lvl-green { --lvl: var(--green); } .lvl-amber { --lvl: var(--amber); } .lvl-cyan { --lvl: var(--cyan); } .lvl-red { --lvl: var(--red); }
+
+  kbd { font-family: var(--mono); font-size: .88em; background: var(--bg-sunken); border: 1px solid var(--rule); border-radius: 4px; padding: 1px 5px; color: var(--ink); }
+
+  /* ── Маршрут ───────────────────────────────────────────────────────────── */
+  .route { counter-reset: step; display: grid; gap: 0; }
+  .step { display: grid; grid-template-columns: 44px 1fr; gap: 16px; padding: 16px 0; border-bottom: 1px dashed var(--rule-soft); }
+  .step:last-child { border-bottom: 0; }
+  .step .num { counter-increment: step; font-family: var(--mono); font-weight: 700; color: var(--accent);
+    font-size: 15px; display:flex; align-items:flex-start; }
+  .step .num::before { content: counter(step, decimal-leading-zero); }
+  .step h4 { margin: 0 0 3px; font-size: 15.5px; }
+  .step p { margin: 0; font-size: 14px; color: var(--ink-soft); }
+
+  /* ── Подвал ────────────────────────────────────────────────────────────── */
+  .foot { padding: 40px 0 56px; color: var(--ink-faint); font-size: 13.5px; }
+  .foot .perf { background: var(--bg-panel); border: 1px solid var(--rule); border-radius: 12px; padding: 18px 20px; margin-bottom: 22px; box-shadow: var(--shadow); }
+  .foot .perf h3 { font-size: 15px; margin-bottom: 8px; color: var(--ink); }
+  .foot .perf ul { margin: 0; padding-left: 18px; color: var(--ink-soft); font-size: 13.5px; line-height: 1.7; }
+  .foot .perf code { font-size: 12.5px; color: var(--accent-ink); }
+  .foot .tag-red { color: var(--red); font-weight: 700; }
+  .foot .tag-amber { color: var(--amber); font-weight: 700; }
+  .foot .tag-green { color: var(--green); font-weight: 700; }
+
+  @media (max-width: 800px) {
+    .hero-inner { grid-template-columns: 1fr; gap: 26px; }
+    .hero .term-wrap { order: -1; }
+  }
+</style>
+
+<div class="hero">
+  <div class="wrap hero-inner">
+    <div>
+      <p class="prompt"><span class="tick">$</span> ./atm_sim --live &nbsp;<span class="dim"># учебный симулятор СМО на C++20</span></p>
+      <h1>Карта банкомата<br>для <span class="cy">изучающего</span></h1>
+      <p class="lede">Многопоточный симулятор очереди к банкомату с живым консольным дашбордом.
+        Ниже — что здесь стоит понять: архитектура «один писатель — много читателей», ключевые
+        идиомы C++ с точными местами в коде, и честные слабости, на которых тоже учатся.</p>
+      <div class="statline">
+        <span class="stat"><b>4</b> потока</span>
+        <span class="stat"><b>~7000</b> строк</span>
+        <span class="stat"><b>154</b> теста</span>
+        <span class="stat">TSan / ASan <b>чисто</b></span>
+        <span class="stat">C++<b>20</b></span>
+      </div>
+    </div>
+    <div class="term-wrap">
+<div class="term" aria-label="Пример кадра дашборда">┌──────────────┐   <span class="hd">ATM Simulator</span>  <span class="dim">[LIVE 15 fps]</span>
+│   <span class="hd">БАНКОМАТ</span>   │
+│┌────────────┐│    Касса [<span class="g">████████████░░░░</span>] <span class="g">482 350.00</span>
+││ <span class="c">ОТСЧЁТ</span>     ││    ────────────────┬──────────────
+││ <span class="c">КУПЮР...</span>   ││    Обслуживается: <span class="c">#42</span>  │ <span class="hd">СТАТИСТИКА</span>
+││ <span class="c">▓▓▓▓░░░ 61%</span> ││     └ <span class="c">отсчёт купюр</span>    │  Обслужено:  128
+│└────────────┘│                       │  ρ = λ/μ:  <span class="y">1.67</span>
+│ [<span class="c">▮</span>]     [<span class="g">══</span>] │    Очередь (5)         │ <span class="hd">ПОСЛЕДНИЕ</span>
+└──────────────┘      <span class="c">o</span>  <span class="dim">o</span>  <span class="y">o</span>  <span class="dim">o</span>  <span class="dim">o</span>    │  #41 <span class="g">OK</span>
+                     <span class="c">/|\</span> <span class="dim">/|\</span> <span class="y">/|\</span>          │  #39 <span class="r">FAIL</span> нет денег
+   <span class="dim">снимок читается, движок не ждёт →</span></div>
+    </div>
+  </div>
+</div>
+
+<!-- ── Архитектура ────────────────────────────────────────────────────────── -->
+<section id="arch">
+  <div class="wrap">
+    <div class="sec-head"><span class="n">01</span><h2>Как устроен поток данных</h2><span class="rule"></span></div>
+    <p class="sec-intro">Главный инвариант проекта: состояние течёт строго в одну сторону —
+      <b>писатель → снимки-копии → рендер</b>. Рендер физически не может испортить движок, и на
+      этом держится чистота под ThreadSanitizer. Долгое «обслуживание» — это сон на condition_variable
+      с <b>отпущенным</b> локом, поэтому чтение снимка никогда не ждёт задержку обслуживания.</p>
+
+    <div class="flow">
+      <div class="flow-row">
+        <div class="node writer">
+          <span class="tag">1 писатель</span>
+          <h4>Движок мутирует состояние</h4>
+          <p>Поток обслуживания — единственный, кто меняет счета, кассу, журнал. Поток прихода кладёт клиентов в очередь. Всё под одним <code>std::mutex</code>.</p>
+          <span class="file">AtmEngine.cpp:233</span>
+        </div>
+        <div class="node bridge">
+          <span class="tag">развязка</span>
+          <h4>Снимки-DTO под кратким локом</h4>
+          <p>Читатель получает <b>копию</b> простых структур без мьютексов и указателей. Дальше работает с ней сколько угодно, не мешая движку.</p>
+          <span class="file">Snapshots.hpp</span>
+        </div>
+        <div class="node reader">
+          <span class="tag">много читателей</span>
+          <h4>Render-поток: кэш + частоты</h4>
+          <p>Снимки опрашиваются на <code>refresh_hz</code>, кадры рисуются на <code>scene_fps</code> из кэша — анимация плавная, мьютекс не перегружен.</p>
+          <span class="file">LiveRenderer.cpp:474</span>
+        </div>
+      </div>
+      <div class="flow-arrow">↓</div>
+      <div class="flow-row">
+        <div class="node reader">
+          <span class="tag">reconciliation</span>
+          <h4>ScenePresenter</h4>
+          <p>Согласует актёров со снимком, как client-side reconciliation в сетевых играх: снимок авторитетен, человечки плавно «догоняют».</p>
+          <span class="file">ScenePresenter.cpp:138</span>
+        </div>
+        <div class="node reader">
+          <span class="tag">чистая функция</span>
+          <h4>Composer → Canvas</h4>
+          <p>SceneView → composeScene (без времени и движка) → клеточная канва с белым списком глифов → строки.</p>
+          <span class="file">SceneCanvas.hpp</span>
+        </div>
+        <div class="node reader">
+          <span class="tag">вывод</span>
+          <h4>FrameDiffer → терминал</h4>
+          <p>В терминал уходят только изменившиеся строки. Полный кадр в legacy conhost — 42–50 мс; дифф — ~1 мс.</p>
+          <span class="file">FrameDiffer.hpp</span>
+        </div>
+      </div>
+    </div>
+
+    <div class="threads">
+      <span class="thread"><span class="dot" style="background:var(--red)"></span><b>Поток обслуживания</b> — <code>run()</code>, единственный писатель</span>
+      <span class="thread"><span class="dot" style="background:var(--amber)"></span><b>Поток прихода</b> — <code>generateArrivals()</code></span>
+      <span class="thread"><span class="dot" style="background:var(--cyan)"></span><b>Render-поток</b> — <code>renderLoop()</code>, только читает</span>
+      <span class="thread"><span class="dot" style="background:var(--blue)"></span><b>Главный</b> — консоль команд + оркестрация</span>
+    </div>
+    <p class="sec-intro" style="margin-top:22px">Останов — кооперативный: <code>requestStop()</code> под мьютексом
+      выставляет <code>state_ = Stopped</code> и делает <code>notify_all()</code>; предикаты всех ожиданий проверяют это.
+      Всё на «железобетонных» примитивах (<code>std::thread</code> + <code>mutex</code> + <code>condition_variable</code> + <code>atomic</code>) —
+      <b>сознательно без</b> <code>jthread</code>/<code>stop_token</code>/<code>shared_mutex</code>: та связка падает на части версий MSVC STL.</p>
+  </div>
+</section>
+
+<!-- ── Базовый ────────────────────────────────────────────────────────────── -->
+<section id="basic">
+  <div class="wrap">
+    <div class="sec-head"><span class="n">02 · базовый</span><h2>С чего начать</h2><span class="rule"></span></div>
+    <p class="sec-intro">Фундамент, который стоит уверенно узнавать в чужом коде. Если что-то здесь ещё
+      непривычно — начинать разбор проекта нужно именно отсюда.</p>
+    <div class="grid">
+
+      <div class="card lvl-green">
+        <div class="card-top"><span class="lvl-tag">базовый</span></div>
+        <h3>Деньги — целые копейки, не <code>double</code></h3>
+        <span class="file">core/Money.hpp:18</span>
+        <p class="why"><code>Money = std::int64_t</code>, сумма хранится в минорных единицах (50000 = 500.00).</p>
+        <div class="note"><b>Правило:</b> деньги, проценты, количество — целые или decimal; <code>double</code> только для физики и графики. Классика бага новичка — хранить деньги в <code>double</code> и «лечить» сравнением с epsilon.</div>
+      </div>
+
+      <div class="card lvl-green">
+        <div class="card-top"><span class="lvl-tag">базовый</span></div>
+        <h3><code>enum class</code> + <code>switch</code> без <code>default</code></h3>
+        <span class="file">core/Types.cpp:5</span>
+        <p class="why">Все перечисления домена — scoped enum: нет неявного <code>int</code>, имена не текут. <code>switch</code> по всем значениям без <code>default:</code>.</p>
+        <div class="note"><b>Зачем без default:</b> при добавлении нового значения компилятор (<kbd>-Wswitch</kbd>/<kbd>/W4</kbd>) напомнит про забытый case. <code>default:</code> «съел» бы это предупреждение.</div>
+      </div>
+
+      <div class="card lvl-green">
+        <div class="card-top"><span class="lvl-tag">базовый</span></div>
+        <h3>const-корректность интерфейса</h3>
+        <span class="file">core/Cashbox.hpp</span>
+        <p class="why">Наблюдатели (<code>balance()</code>, <code>can*()</code>) — <code>const</code>; мутаторы — нет. Предикаты и изменения читаются раздельно.</p>
+        <div class="note"><b>На вырост:</b> без <code>const</code> на геттере его не позвать из потока-читателя, которому отдали <code>const&amp;</code>. <code>const</code> по умолчанию — и документация, и защита.</div>
+      </div>
+
+      <div class="card lvl-green">
+        <div class="card-top"><span class="lvl-tag">базовый</span></div>
+        <h3>ANSI-коды в одном месте</h3>
+        <span class="file">console/Terminal.hpp:114</span>
+        <p class="why">Все escape-последовательности — в <code>namespace ansi</code> как inline-функции. Никаких «магических» <code>\033[</code> по коду.</p>
+        <div class="note"><b>Инкапсуляция констант:</b> захотелось truecolor — правишь одно место. Каждый окрашенный участок обязан закрываться <code>reset()</code>, иначе цвет «течёт» дальше.</div>
+      </div>
+
+      <div class="card lvl-green">
+        <div class="card-top"><span class="lvl-tag">базовый</span></div>
+        <h3>Не храни то, что можешь вычислить</h3>
+        <span class="file">engine/ServiceStages.hpp:30</span>
+        <p class="why">Этап обслуживания («вводит PIN», «отсчёт купюр») не хранится, а вычисляется чистой функцией <code>serviceStageAt(op, progress)</code>.</p>
+        <div class="note"><b>Принцип:</b> хранимое производное состояние надо синхронизировать и защищать от гонок; вычисляемое — нет. Поэтому фича не тронула тонкий цикл ожидания.</div>
+      </div>
+
+    </div>
+  </div>
+</section>
+
+<!-- ── Средний ────────────────────────────────────────────────────────────── -->
+<section id="mid">
+  <div class="wrap">
+    <div class="sec-head"><span class="n">03 · средний</span><h2>Паттерны и идиомы</h2><span class="rule"></span></div>
+    <p class="sec-intro">Приёмы, которые стоит забрать в собственные проекты: развязка потоков, владение
+      ресурсами по RAII, сменное поведение за интерфейсом, дисциплина сборки.</p>
+    <div class="grid">
+
+      <div class="card lvl-amber">
+        <div class="card-top"><span class="lvl-tag">средний</span></div>
+        <h3>Producer–Consumer через <code>deque</code> + cv</h3>
+        <span class="file">engine/AtmEngine.cpp:103</span>
+        <p class="why">Поток прихода кладёт клиента и <code>notify_all()</code>; поток обслуживания спит на <code>wakeUp_</code>, пока очередь пуста, затем берёт из головы.</p>
+        <div class="note"><b>Вопрос на защите:</b> почему потребитель ждёт <b>в цикле</b> с перепроверкой, а не одним <code>wait</code>? Из-за ложных пробуждений и потому что условие могло измениться, пока поток вставал.</div>
+      </div>
+
+      <div class="card lvl-amber">
+        <div class="card-top"><span class="lvl-tag">средний</span></div>
+        <h3>Снимки-DTO + <code>mutable mutex</code></h3>
+        <span class="file">engine/Snapshots.hpp:3</span>
+        <p class="why">Читатели никогда не получают ссылок на живое состояние — только копии, снятые под коротким локом. Мьютекс <code>mutable</code> в <code>const</code>-методах.</p>
+        <div class="note"><b>Паттерн в копилку:</b> «снял копию под коротким локом — работай без лока». Ошибка, которой код избегает: вернуть <code>const&amp;</code> на <code>queue_</code> — ссылка переживёт лок, читатель словит гонку.</div>
+      </div>
+
+      <div class="card lvl-amber">
+        <div class="card-top"><span class="lvl-tag">средний</span></div>
+        <h3>Strategy + Factory + <code>unique_ptr</code></h3>
+        <span class="file">engine/ServiceTimeProvider.hpp:17</span>
+        <p class="why">Время обслуживания — сменное распределение за общим интерфейсом. Три реализации спрятаны в анонимном namespace; наружу — только фабрика.</p>
+        <div class="note"><b>Эталонная связка:</b> Strategy (поведение) + Factory (создание по конфигу) + <code>unique_ptr</code> (владение полиморфом). <code>virtual ~T() = default</code> обязателен при удалении через базу.</div>
+      </div>
+
+      <div class="card lvl-amber">
+        <div class="card-top"><span class="lvl-tag">средний</span></div>
+        <h3>RAII для потоков</h3>
+        <span class="file">engine/ScopedEngineThreads.hpp</span>
+        <p class="why">Деструктор joinable-потока зовёт <code>std::terminate</code>. Обёртка гарантирует <code>stop()</code>+<code>join()</code> при любом выходе, идемпотентно.</p>
+        <div class="note"><b>Порядок важен:</b> сначала <code>requestStop()</code> — сигнал на выход, <b>потом</b> <code>join()</code>, иначе join повиснет на спящем потоке. По сути — ручная замена <code>std::jthread</code>.</div>
+      </div>
+
+      <div class="card lvl-amber">
+        <div class="card-top"><span class="lvl-tag">средний</span></div>
+        <h3>Дифф-рендеринг кадров</h3>
+        <span class="file">console/FrameDiffer.hpp</span>
+        <p class="why">Вместо полной перерисовки хранится прошлый кадр; возвращается ANSI-пакет только для изменившихся строк. Мотивация — замеренная стоимость записи.</p>
+        <div class="note"><b>Тонкость контракта:</b> <code>diff()</code> запоминает кадр как «отрисованный», даже если пакет не ушёл (пауза). Поэтому при пропуске обязателен <code>invalidate()</code>.</div>
+      </div>
+
+      <div class="card lvl-amber">
+        <div class="card-top"><span class="lvl-tag">средний</span></div>
+        <h3>Modern CMake: слои и <code>PUBLIC/PRIVATE</code></h3>
+        <span class="file">CMakeLists.txt:46</span>
+        <p class="why"><code>INTERFACE</code>-цель раздаёт флаги; библиотеки слоями (core → config → engine → console). <code>nlohmann_json</code> — <code>PRIVATE</code>: деталь реализации не течёт по графу.</p>
+        <div class="note"><b>Проверь себя:</b> почему <code>atmsim_core</code> легко тестировать? Нижний слой не знает про верхние — зависимости строго в одну сторону. Сравни со сборкой «один target на всё».</div>
+      </div>
+
+    </div>
+  </div>
+</section>
+
+<!-- ── Продвинутый ────────────────────────────────────────────────────────── -->
+<section id="adv">
+  <div class="wrap">
+    <div class="sec-head"><span class="n">04 · продвинутый</span><h2>Изюминки проекта</h2><span class="rule"></span></div>
+    <p class="sec-intro">Места, ради которых этот проект интересно читать: тонкая синхронизация,
+      корректность на границах, детерминизм. Разбирать их лучше с комментариями в коде — они там подробные.</p>
+    <div class="grid">
+
+      <div class="card lvl-cyan">
+        <div class="card-top"><span class="lvl-tag">продвинутый</span></div>
+        <h3>cv без потери пробуждений — <code>atomic</code> не спасает</h3>
+        <span class="file">engine/AtmEngine.cpp:535</span>
+        <p class="why">Смена условия делается <b>под тем же мьютексом</b>, на котором ждут, затем <code>notify_all()</code>. Иначе возможна потеря пробуждения в зазор между проверкой предиката и засыпанием.</p>
+        <div class="note"><b>Главный миф студента:</b> «переменная же <code>atomic</code>, зачем мьютекс?» Атомарность защищает от гонки <b>данных</b>, но не от потерянного пробуждения — это гонка <b>логики</b> вокруг cv.</div>
+      </div>
+
+      <div class="card lvl-cyan">
+        <div class="card-top"><span class="lvl-tag">продвинутый</span></div>
+        <h3>Прерываемое «слайсовое» ожидание</h3>
+        <span class="file">engine/AtmEngine.cpp:172</span>
+        <p class="why">Вместо <code>sleep_for(длительность)</code> ожидание нарезано на слайсы: реагирует на pause/stop и на истечение терпения в очереди; лок во сне отпущен.</p>
+        <div class="note"><b>Тонкость:</b> <code>wait_for</code> здесь <b>без</b> предиката — легально только потому, что обёрнут внешним <code>for(;;)</code>, который каждый раз перечитывает режим. Не копируй «голый» <code>wait_for</code>.</div>
+      </div>
+
+      <div class="card lvl-cyan">
+        <div class="card-top"><span class="lvl-tag">продвинутый</span></div>
+        <h3>Прогресс через параметры формулы</h3>
+        <span class="file">engine/AtmEngine.hpp:160</span>
+        <p class="why">Спящий поток не может обновлять «процент». Движок публикует тройку (план / накоплено / старт слайса), а <code>snapshot()</code> довычисляет прогресс в момент чтения.</p>
+        <div class="note"><b>Идея в копилку:</b> если производитель не может часто обновлять значение — публикуй параметры формулы, вычисляй у читателя. Пауза (слайс закрыт) честно замораживает шкалу.</div>
+      </div>
+
+      <div class="card lvl-cyan">
+        <div class="card-top"><span class="lvl-tag">продвинутый</span></div>
+        <h3>Проверка переполнения <b>до</b> сложения</h3>
+        <span class="file">core/Cashbox.cpp:15</span>
+        <p class="why"><code>balance_ &lt;= max - amount</code>, а не <code>balance_ + amount &gt; max</code>: переполнение знакового целого — UB, то есть сама проверка была бы сломана.</p>
+        <div class="note"><b>Запомни паттерн:</b> для <code>a + b &lt;= MAX</code> пиши <code>a &lt;= MAX - b</code> (при <code>b &gt; 0</code>). Тесты бьют ровно в границу: столько — можно, на единицу больше — нельзя.</div>
+      </div>
+
+      <div class="card lvl-cyan">
+        <div class="card-top"><span class="lvl-tag">продвинутый</span></div>
+        <h3>Транзакционность: verify-then-commit</h3>
+        <span class="file">core/Operation.cpp:16</span>
+        <p class="why">Сначала <b>все</b> проверки, потом обе мутации счёта и кассы. Невозможно состояние «счёт уменьшили, а касса не выдала» — на этом стоит property-тест сохранения денег.</p>
+        <div class="note"><b>Заметь:</b> <code>applyOperation</code> — свободная функция, а не метод. Логика, связывающая <b>два</b> объекта, не принадлежит ни одному из них.</div>
+      </div>
+
+      <div class="card lvl-cyan">
+        <div class="card-top"><span class="lvl-tag">продвинутый</span></div>
+        <h3>Детерминизм: два RNG, <code>splitmix64</code></h3>
+        <span class="file">engine/AtmEngine.hpp:151 · scene/ActorAnim.cpp:22</span>
+        <p class="why">У <code>mt19937_64</code> нет синхронизации — один движок на два потока это гонка. Держат два независимых. В сцене вместо RNG — хэш <code>splitmix64(id, окно)</code>.</p>
+        <div class="note"><b>Hash-based randomness:</b> одна пара (id, момент) всегда даёт одну позу → golden-тесты не флапают, состояние хранить не нужно. Разные аспекты — разные соли, иначе скрытая корреляция.</div>
+      </div>
+
+      <div class="card lvl-cyan">
+        <div class="card-top"><span class="lvl-tag">продвинутый</span></div>
+        <h3>Валидация как защита preconditions <code>&lt;random&gt;</code></h3>
+        <span class="file">config/ConfigLoader.cpp:94</span>
+        <p class="why"><code>stddev &gt; 0</code>, <code>probability ∈ [0,1]</code>, <code>isfinite</code>, потолок <code>count</code> — их нарушение это UB без диагностики. Ловят на границе системы, а не в глубине движка.</p>
+        <div class="note"><b>Урок:</b> у <code>&lt;random&gt;</code> есть preconditions, нарушение которых — тихий UB. Каждая проверка снабжена комментарием «зачем» со ссылкой на потребителя значения — подражай этому стилю.</div>
+      </div>
+
+      <div class="card lvl-cyan">
+        <div class="card-top"><span class="lvl-tag">продвинутый</span></div>
+        <h3>Однопоточный эталон перед потоками</h3>
+        <span class="file">engine/SimulationRunner.cpp</span>
+        <p class="why">Та же доменная логика без потоков и реального времени: дискретно-событийная модель, время — <code>double</code>, макс. очередь считается sweep-line.</p>
+        <div class="note"><b>Методология важнее кода:</b> сначала отладь логику детерминированно и однопоточно, потом добавляй потоки — иначе отлаживаешь гонки и доменные баги одновременно.</div>
+      </div>
+
+    </div>
+  </div>
+</section>
+
+<!-- ── Слабости ───────────────────────────────────────────────────────────── -->
+<section id="weak">
+  <div class="wrap">
+    <div class="sec-head"><span class="n">05 · тоже учат</span><h2>Честные слабости</h2><span class="rule"></span></div>
+    <p class="sec-intro">Ценно, что в проекте есть места «как не надо» — их полезно уметь замечать и обосновывать.
+      Хороший вопрос на каждый: как бы ты это починил и какой ценой?</p>
+    <div class="grid">
+
+      <div class="card lvl-red">
+        <div class="card-top"><span class="lvl-tag">антипаттерн</span></div>
+        <h3>Слабые <code>using</code>-алиасы</h3>
+        <span class="file">core/Types.hpp:16</span>
+        <p><code>ClientId</code> и <code>AccountId</code> — один и тот же <code>uint64_t</code>: компилятор не различит, можно перепутать. Промышленное решение — «сильный typedef» (<code>struct</code>). Контраст с <code>enum class</code> рядом.</p>
+      </div>
+
+      <div class="card lvl-red">
+        <div class="card-top"><span class="lvl-tag">антипаттерн</span></div>
+        <h3>Конструкторы без инварианта</h3>
+        <span class="file">core/Cashbox.cpp:7</span>
+        <p><code>Cashbox(-5)</code> создаёт объект с отрицательным балансом, который все методы старательно держат ≥ 0. Инвариант должен устанавливаться конструктором, а не только поддерживаться.</p>
+      </div>
+
+      <div class="card lvl-red">
+        <div class="card-top"><span class="lvl-tag">антипаттерн</span></div>
+        <h3>Нет <code>[[nodiscard]]</code></h3>
+        <span class="file">core/Types.hpp · Cashbox.hpp</span>
+        <p>Результат <code>OperationOutcome</code> и <code>accept()</code> можно молча проигнорировать — компилятор не пикнет. Атрибут заставил бы написать явное <code>(void)</code> там, где отказ обрабатывать не нужно.</p>
+      </div>
+
+      <div class="card lvl-red">
+        <div class="card-top"><span class="lvl-tag">антипаттерн</span></div>
+        <h3><code>void*</code> + голый <code>new/delete</code></h3>
+        <span class="file">console/Terminal.cpp</span>
+        <p>Исходный <code>termios</code> хранится как <code>void*</code> с ручным <code>new/delete</code>, чтобы не тащить заголовок. Идиоматичнее pimpl или <code>unique_ptr</code> с неполным типом — именно то, от чего RAII должен защищать.</p>
+      </div>
+
+      <div class="card lvl-red">
+        <div class="card-top"><span class="lvl-tag">архитектура</span></div>
+        <h3><code>AtmEngine</code> — «бог-объект»</h3>
+        <span class="file">engine/AtmEngine.hpp</span>
+        <p>Очередь, счета, касса, ТО, статистика, журнал, реестр — ~30 полей под одним мьютексом. Напрашивается разбиение (QueueManager / StatsCollector) или event-sourcing.</p>
+      </div>
+
+      <div class="card lvl-red">
+        <div class="card-top"><span class="lvl-tag">процесс</span></div>
+        <h3>Дублирование списков исходников</h3>
+        <span class="file">CMakeLists.txt + 4 скрипта</span>
+        <p>Файлы перечислены в CMake и в четырёх san-скриптах — новый <code>.cpp</code> вписывать в 5 мест, и забывчивость всплывёт только ошибкой линковки. Честный компромисс офлайн-окружения.</p>
+      </div>
+
+    </div>
+  </div>
+</section>
+
+<!-- ── Маршрут ────────────────────────────────────────────────────────────── -->
+<section id="route">
+  <div class="wrap">
+    <div class="sec-head"><span class="n">06</span><h2>Маршрут изучения</h2><span class="rule"></span></div>
+    <p class="sec-intro">Порядок, в котором проект открывается без боли — от чистого ядра к многопоточности и рендеру.</p>
+    <div class="route">
+      <div class="step"><div class="num"></div><div>
+        <h4>Доменное ядро без потоков</h4>
+        <p><code>core/</code>: <code>Money</code>, <code>Account</code>, <code>Cashbox</code>, <code>applyOperation</code>. Здесь — типобезопасность денег, инварианты, verify-then-commit. Ни одной строки многопоточности.</p>
+      </div></div>
+      <div class="step"><div class="num"></div><div>
+        <h4>Однопоточный эталон</h4>
+        <p><code>engine/SimulationRunner.cpp</code>: та же СМО-логика на числах и без потоков. Понять модель, прежде чем ловить гонки.</p>
+      </div></div>
+      <div class="step"><div class="num"></div><div>
+        <h4>Многопоточный движок</h4>
+        <p><code>engine/AtmEngine.{hpp,cpp}</code> + <code>Snapshots.hpp</code>: producer-consumer, протокол остановки, слайсовое ожидание, снимки-развязка. Читать вместе с комментариями.</p>
+      </div></div>
+      <div class="step"><div class="num"></div><div>
+        <h4>Рендер и сцена</h4>
+        <p><code>console/</code>: дифф-рендер, абстракция терминала, MVP-конвейер сцены, reconciliation актёров, UTF-8 на трёх уровнях.</p>
+      </div></div>
+      <div class="step"><div class="num"></div><div>
+        <h4>Инфраструктура</h4>
+        <p><code>CMakeLists.txt</code>, <code>tests/simple_test.hpp</code>, <code>scripts/</code>: слоистая сборка, самодельный тест-харнес, санитайзеры (ASan+UBSan вместе, TSan — отдельно).</p>
+      </div></div>
+    </div>
+  </div>
+</section>
+
+<!-- ── Подвал ─────────────────────────────────────────────────────────────── -->
+<div class="foot">
+  <div class="wrap">
+    <div class="perf">
+      <h3>Что подкрутили по итогам анализа производительности</h3>
+      <ul>
+        <li><span class="tag-red">🔴 главное</span> — <code>operations()</code> теперь копирует только хвост журнала под мьютексом, а не весь растущий <code>log_</code> (было O(всего журнала) на каждом опросе ленты).</li>
+        <li><span class="tag-amber">🟡</span> — рендер кэширует табличную часть кадра и пересобирает только анимируемую сцену (раньше весь кадр строился на каждый кадр, и дифф выбрасывал ~73%).</li>
+        <li><span class="tag-green">🟢</span> — единый <code>fullSnapshot()</code> под одним локом вместо пяти; <code>std::erase_if</code> вместо пересборки очереди; пауза ждёт событие, а не поллит; мелкие <code>reserve</code>.</li>
+      </ul>
+    </div>
+    <p>Разбор и правки — на ветке <code>perf/part1-optimizations</code>. Изменения поведение-сохраняющие: прогон
+      воспроизводим бит-в-бит, все 154 теста + ThreadSanitizer + AddressSanitizer зелёные. Осознанно <b>не</b> тронуты
+      flush логгера (гарантия при падении) и пересоздание <code>normal_distribution</code> (сохраняет воспроизводимость).</p>
+  </div>
+</div>
+
+<script>
+  // Уважаем выбор темы вьюером: тумблер стемпит data-theme на :root, он должен побеждать медиа-запрос.
+  (function () {
+    var root = document.documentElement;
+    try {
+      var saved = localStorage.getItem('atm-guide-theme');
+      if (saved === 'light' || saved === 'dark') root.setAttribute('data-theme', saved);
+    } catch (e) {}
+  })();
+</script>
