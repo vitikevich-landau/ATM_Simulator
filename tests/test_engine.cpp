@@ -471,6 +471,76 @@ TEST(engine_operations_filter_by_type) {
     }
 }
 
+// Фильтр operations --last N возвращает РОВНО последние N записей журнала в
+// хронологическом порядке (новые в конце) — тот же результат, что «взять всё и
+// оставить хвост». Регресс на оптимизацию обхода журнала с конца (горячий путь
+// ленты дашборда): порядок и состав хвоста не должны измениться. Заодно —
+// комбинация type + last.
+TEST(engine_operations_last_returns_tail_in_order) {
+    const int count = 60;
+    Config cfg = fastConfig(count, 1000.0);
+    AtmEngine engine(cfg);
+    runToCompletion(engine, count, 10s);
+
+    const std::vector<OperationRecord> all = engine.operations(OperationFilter{});
+    CHECK(all.size() >= 10);  // достаточно записей, чтобы хвост был осмыслен
+
+    // last = 5 совпадает с последними 5 записями полного журнала, id-в-id.
+    OperationFilter f5;
+    f5.last = 5;
+    const std::vector<OperationRecord> tail5 = engine.operations(f5);
+    CHECK_EQ(tail5.size(), static_cast<std::size_t>(5));
+    for (std::size_t i = 0; i < tail5.size(); ++i) {
+        const OperationRecord& expected = all[all.size() - 5 + i];
+        CHECK_EQ(tail5[i].id, expected.id);
+    }
+
+    // last больше журнала — возвращается весь журнал без обрезки/дублей.
+    OperationFilter fbig;
+    fbig.last = all.size() + 100;
+    CHECK_EQ(engine.operations(fbig).size(), all.size());
+
+    // type + last: последние N записей ИМЕННО этого типа, порядок сохранён.
+    OperationFilter ft;
+    ft.type = OperationType::Withdraw;
+    const std::vector<OperationRecord> allWithdraw = engine.operations(ft);
+    ft.last = 3;
+    const std::vector<OperationRecord> tailWithdraw = engine.operations(ft);
+    CHECK(tailWithdraw.size() <= 3);
+    for (const auto& r : tailWithdraw) CHECK(r.type == OperationType::Withdraw);
+    if (allWithdraw.size() >= 3) {
+        CHECK_EQ(tailWithdraw.size(), static_cast<std::size_t>(3));
+        for (std::size_t i = 0; i < tailWithdraw.size(); ++i) {
+            CHECK_EQ(tailWithdraw[i].id, allWithdraw[allWithdraw.size() - 3 + i].id);
+        }
+    }
+}
+
+// fullSnapshot() под одним локом отдаёт то же, что пять раздельных снимков.
+// Проверяем на отработавшем движке (состояние стабильно, потоки не мутируют).
+TEST(engine_full_snapshot_matches_parts) {
+    const int count = 40;
+    Config cfg = fastConfig(count, 1000.0);
+    AtmEngine engine(cfg);
+    runToCompletion(engine, count, 10s);
+
+    OperationFilter feed;
+    feed.last = 5;
+    const FullSnapshot full = engine.fullSnapshot(feed);
+
+    const AtmSnapshot atm = engine.snapshot();
+    const StatsSnapshot st = engine.statsSnapshot();
+    const std::vector<ClientSnapshot> q = engine.queueSnapshot();
+    const std::vector<OperationRecord> ops = engine.operations(feed);
+
+    CHECK_EQ(full.atm.totalServed, atm.totalServed);
+    CHECK_EQ(full.atm.queueLength, atm.queueLength);
+    CHECK_EQ(full.stats.served, st.served);
+    CHECK_EQ(full.queue.size(), q.size());
+    CHECK_EQ(full.ops.size(), ops.size());
+    CHECK(full.allProcessed == engine.allClientsProcessed());
+}
+
 // Отдельный поток-читатель (как render-поток дашборда) параллельно дёргает
 // ВСЕ snapshot-методы, пока идёт обслуживание. Ценность теста — под TSan:
 // путь чтения рендерера не должен создавать гонок данных (§4.8, §14).

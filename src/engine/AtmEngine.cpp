@@ -18,6 +18,12 @@ AtmEngine::AtmEngine(const Config& cfg, Logger* logger)
       // Два независимых seed'а: разные потоки — разные движки (см. заголовок).
       serviceRng_(cfg.simulation.randomSeed),
       arrivalRng_(cfg.simulation.randomSeed + 1u),
+      // Распределения генерации клиентов — параметры фиксированы конфигом, строим
+      // один раз (порядок инициализации совпадает с порядком объявления полей).
+      opDist_{cfg.clients.weights.checkBalance, cfg.clients.weights.withdraw,
+              cfg.clients.weights.deposit},
+      amountDist_(cfg.clients.amountRange.min, cfg.clients.amountRange.max),
+      patienceDist_(cfg.clients.patienceSeconds.min, cfg.clients.patienceSeconds.max),
       logger_(logger) {
     // По счёту на каждого будущего клиента (клиент i пользуется счётом i).
     accounts_.reserve(static_cast<std::size_t>(cfg.clients.count));
@@ -31,30 +37,33 @@ AtmEngine::AtmEngine(const Config& cfg, Logger* logger)
 // Сколько МОДЕЛЬНЫХ секунд клиент уже ждёт. Модельное время идёт в time_scale
 // раз быстрее реального, поэтому реальное ожидание умножаем на time_scale.
 double AtmEngine::modelSecondsWaited(const Client& c) const {
-    const auto realElapsed = Clock::now() - c.arrivalTime;
-    const double realSec = std::chrono::duration<double>(realElapsed).count();
+    return modelSecondsWaited(c, Clock::now());
+}
+
+double AtmEngine::modelSecondsWaited(const Client& c, Clock::time_point now) const {
+    const double realSec = std::chrono::duration<double>(now - c.arrivalTime).count();
     return realSec * cfg_.simulation.timeScale;
 }
 
 bool AtmEngine::pruneExpiredQueueLocked() {
-    bool removed = false;
-    std::deque<Client> kept;
-    while (!queue_.empty()) {
-        Client c = queue_.front();
-        queue_.pop_front();
-        if (modelSecondsWaited(c) > static_cast<double>(c.patience.count())) {
-            roster_[c.id - 1].state = ClientState::LeftQueue;
-            ++totalLeft_;
-            removed = true;
-        } else {
-            kept.push_back(c);
-        }
-    }
-    queue_ = std::move(kept);
-    if (removed && queue_.empty() && !currentClient_ && state_.load() == AtmState::Serving) {
+    // Один Clock::now() на весь проход (а не на каждого клиента): все waited-
+    // времена сравниваются с одним мигом. Удаляем перетерпевших НА МЕСТЕ через
+    // std::erase_if (deque, C++20) — один линейный проход без пересборки deque и
+    // без копий Client; если никто не ушёл (типичный случай при пробуждении),
+    // remove_if вернёт end и очередь не трогается. Побочные эффекты предиката
+    // (пометка в реестре, счётчик ушедших) срабатывают ровно раз на элемент.
+    const auto now = Clock::now();
+    const auto removedCount = std::erase_if(queue_, [&](const Client& c) {
+        if (modelSecondsWaited(c, now) <= static_cast<double>(c.patience.count())) return false;
+        roster_[c.id - 1].state = ClientState::LeftQueue;
+        ++totalLeft_;
+        return true;
+    });
+    if (removedCount > 0 && queue_.empty() && !currentClient_ &&
+        state_.load() == AtmState::Serving) {
         state_.store(AtmState::Idle);
     }
-    return removed;
+    return removedCount > 0;
 }
 
 std::optional<Clock::time_point> AtmEngine::nextQueuePatienceDeadlineLocked() const {
@@ -70,26 +79,20 @@ std::optional<Clock::time_point> AtmEngine::nextQueuePatienceDeadlineLocked() co
 }
 
 Client AtmEngine::makeClient() {
-    // Эти распределения дешёвые, строим их по месту. Все берут ТОЛЬКО arrivalRng_,
-    // к которому не прикасается ни один другой поток.
-    std::discrete_distribution<int> opDist{
-        cfg_.clients.weights.checkBalance, cfg_.clients.weights.withdraw, cfg_.clients.weights.deposit};
-    std::uniform_int_distribution<std::int64_t> amountDist(cfg_.clients.amountRange.min,
-                                                           cfg_.clients.amountRange.max);
-    std::uniform_int_distribution<int> patienceDist(cfg_.clients.patienceSeconds.min,
-                                                    cfg_.clients.patienceSeconds.max);
-
+    // Распределения — поля движка (построены один раз в конструкторе, см. заголовок).
+    // Все берут ТОЛЬКО arrivalRng_, к которому не прикасается ни один другой поток;
+    // порядок обращений к RNG прежний, поэтому прогон воспроизводим бит-в-бит.
     Client c;
     c.id = nextClientId_++;
     c.accountId = static_cast<AccountId>(generatedCount_);  // индекс в accounts_
     c.arrivalTime = Clock::now();
-    const int pick = opDist(arrivalRng_);
+    const int pick = opDist_(arrivalRng_);
     c.requestedOperation = (pick == 0) ? OperationType::CheckBalance
                          : (pick == 1) ? OperationType::Withdraw
                                        : OperationType::Deposit;
     c.amount = (c.requestedOperation == OperationType::CheckBalance) ? Money{0}
-                                                                     : amountDist(arrivalRng_);
-    c.patience = std::chrono::seconds(patienceDist(arrivalRng_));
+                                                                     : amountDist_(arrivalRng_);
+    c.patience = std::chrono::seconds(patienceDist_(arrivalRng_));
     c.state = ClientState::Waiting;
     ++generatedCount_;
     return c;
@@ -627,6 +630,11 @@ void AtmEngine::applyMaintenanceRenegingLocked() {
 
 bool AtmEngine::allClientsProcessed() const {
     std::lock_guard<std::mutex> lock(mutex_);
+    return allClientsProcessedLocked();
+}
+
+// Тело признака «все клиенты отработаны» БЕЗ захвата лока (вызывающий держит mutex_).
+bool AtmEngine::allClientsProcessedLocked() const {
     // Каждый из cfg_.clients.count клиентов заканчивает ровно в одном терминальном
     // состоянии — обслужен или ушёл, — поэтому равенство «обслужено + ушли == всего»
     // само по себе означает, что в очереди и на обслуживании никого не осталось.
@@ -642,6 +650,13 @@ bool AtmEngine::allClientsProcessed() const {
 // ---------------------------------------------------------------------------
 AtmSnapshot AtmEngine::snapshot() const {
     std::lock_guard<std::mutex> lock(mutex_);
+    return snapshotLocked(Clock::now());
+}
+
+// Тело снимка БЕЗ захвата лока (вызывающий держит mutex_). now — один на весь
+// снимок: прогресс фазы, аптайм и остаток ТО берутся как одного мига —
+// внутренне согласованный снимок вместо нескольких «разъезжающихся» чтений часов.
+AtmSnapshot AtmEngine::snapshotLocked(Clock::time_point now) const {
     AtmSnapshot s;
     s.state = state_.load();
     s.cashboxBalance = cashbox_.balance();
@@ -660,7 +675,7 @@ AtmSnapshot AtmEngine::snapshot() const {
             double walkedRealSec = approachServedRealSec_;
             if (approachSliceStart_) {
                 walkedRealSec +=
-                    std::chrono::duration<double>(Clock::now() - *approachSliceStart_).count();
+                    std::chrono::duration<double>(now - *approachSliceStart_).count();
             }
             const double realWalkSec = approachPlannedModelSec_ / cfg_.simulation.timeScale;
             const double frac = (realWalkSec > 0.0) ? walkedRealSec / realWalkSec : 1.0;
@@ -671,7 +686,7 @@ AtmSnapshot AtmEngine::snapshot() const {
             double servedRealSec = serviceServedRealSec_;
             if (serviceSliceStart_) {
                 servedRealSec +=
-                    std::chrono::duration<double>(Clock::now() - *serviceSliceStart_).count();
+                    std::chrono::duration<double>(now - *serviceSliceStart_).count();
             }
             const double realDurationSec = servicePlannedModelSec_ / cfg_.simulation.timeScale;
             const double frac = (realDurationSec > 0.0) ? servedRealSec / realDurationSec : 1.0;
@@ -686,7 +701,7 @@ AtmSnapshot AtmEngine::snapshot() const {
     s.queueLength = queue_.size();
     s.maxQueueLength = maxQueueLen_;
     s.uptimeSeconds =
-        std::chrono::duration<double>(Clock::now() - startTime_).count() * cfg_.simulation.timeScale;
+        std::chrono::duration<double>(now - startTime_).count() * cfg_.simulation.timeScale;
     s.lowCash = cashbox_.balance() < cfg_.atm.lowCashThreshold;
     s.lastCashMove = lastCashMove_;
     s.maintenancePending = maintenanceStartPending_;
@@ -697,7 +712,7 @@ AtmSnapshot AtmEngine::snapshot() const {
             s.maintenanceEtaSeconds = -1.0;  // до явной команды stop
         } else {
             const double realLeft =
-                std::chrono::duration<double>(maintenanceDeadline_ - Clock::now()).count();
+                std::chrono::duration<double>(maintenanceDeadline_ - now).count();
             s.maintenanceEtaSeconds = (realLeft > 0.0) ? realLeft * cfg_.simulation.timeScale : 0.0;
         }
     }
@@ -706,6 +721,13 @@ AtmSnapshot AtmEngine::snapshot() const {
 
 std::vector<ClientSnapshot> AtmEngine::queueSnapshot() const {
     std::lock_guard<std::mutex> lock(mutex_);
+    return queueSnapshotLocked(Clock::now());
+}
+
+// Тело снимка очереди БЕЗ захвата лока. Один Clock::now() на весь проход —
+// waited-времена всех клиентов согласованы на один миг (и часы не дёргаются на
+// каждого из десятков).
+std::vector<ClientSnapshot> AtmEngine::queueSnapshotLocked(Clock::time_point now) const {
     std::vector<ClientSnapshot> out;
     out.reserve(queue_.size());
     for (const auto& c : queue_) {
@@ -713,7 +735,7 @@ std::vector<ClientSnapshot> AtmEngine::queueSnapshot() const {
         cs.id = c.id;
         cs.requestedOperation = c.requestedOperation;
         cs.amount = c.amount;
-        const double waited = modelSecondsWaited(c);
+        const double waited = modelSecondsWaited(c, now);
         cs.waitedSeconds = waited;
         cs.remainingPatience = static_cast<double>(c.patience.count()) - waited;
         out.push_back(cs);
@@ -730,6 +752,11 @@ Money AtmEngine::accountsTotal() const {
 
 StatsSnapshot AtmEngine::statsSnapshot() const {
     std::lock_guard<std::mutex> lock(mutex_);
+    return statsSnapshotLocked(Clock::now());
+}
+
+// Тело статистики БЕЗ захвата лока (вызывающий держит mutex_).
+StatsSnapshot AtmEngine::statsSnapshotLocked(Clock::time_point now) const {
     StatsSnapshot s;
     s.served = totalServed_;
     s.left = totalLeft_;
@@ -747,7 +774,7 @@ StatsSnapshot AtmEngine::statsSnapshot() const {
     s.rhoTheoretical = (mu > 0.0) ? lambda / mu : 0.0;
 
     const double uptimeModel =
-        std::chrono::duration<double>(Clock::now() - startTime_).count() * cfg_.simulation.timeScale;
+        std::chrono::duration<double>(now - startTime_).count() * cfg_.simulation.timeScale;
     s.uptimeSeconds = uptimeModel;
     s.utilization = (uptimeModel > 0.0) ? busyModel_ / uptimeModel : 0.0;
     return s;
@@ -779,17 +806,56 @@ std::optional<Money> AtmEngine::balanceOf(ClientId id) const {
 
 std::vector<OperationRecord> AtmEngine::operations(const OperationFilter& filter) const {
     std::lock_guard<std::mutex> lock(mutex_);
+    return operationsLocked(filter);
+}
+
+// Тело выборки из журнала БЕЗ захвата лока (вызывающий держит mutex_).
+std::vector<OperationRecord> AtmEngine::operationsLocked(const OperationFilter& filter) const {
+    const auto matches = [&](const OperationRecord& rec) {
+        if (filter.client && rec.clientId != *filter.client) return false;
+        if (filter.type && rec.type != *filter.type) return false;
+        return true;
+    };
+
     std::vector<OperationRecord> out;
-    for (const auto& rec : log_) {
-        if (filter.client && rec.clientId != *filter.client) continue;
-        if (filter.type && rec.type != *filter.type) continue;
-        out.push_back(rec);
-    }
-    // --last N: оставляем только последние N записей.
-    if (filter.last && out.size() > *filter.last) {
-        out.erase(out.begin(), out.end() - static_cast<std::ptrdiff_t>(*filter.last));
+    if (filter.last) {
+        // Горячий путь ленты дашборда (LiveRenderer опрашивает на refresh_hz):
+        // нужен только ХВОСТ из N подходящих записей. Идём с КОНЦА журнала и
+        // набираем не больше N — критическая секция становится O(N хвоста)
+        // вместо O(всего журнала). Это важно, потому что log_ растёт весь
+        // прогон (запись на каждого обслуженного): прежний код копировал под
+        // mutex_ ВЕСЬ журнал и лишь потом обрезал до последних N, и стоимость
+        // этого копирования (а с ней — удержание единственного мьютекса движка)
+        // росла линейно со временем прогона. Результат идентичен: reverse
+        // восстанавливает хронологический порядок «новые в конце».
+        const std::size_t want = *filter.last;
+        out.reserve(std::min(want, log_.size()));
+        for (auto it = log_.rbegin(); it != log_.rend() && out.size() < want; ++it) {
+            if (matches(*it)) out.push_back(*it);
+        }
+        std::reverse(out.begin(), out.end());
+    } else {
+        // Без --last нужен весь отфильтрованный журнал (команды operations/export).
+        for (const auto& rec : log_) {
+            if (matches(rec)) out.push_back(rec);
+        }
     }
     return out;
+}
+
+FullSnapshot AtmEngine::fullSnapshot(const OperationFilter& feedFilter) const {
+    std::lock_guard<std::mutex> lock(mutex_);
+    // Один захват mutex_ и один Clock::now() на весь кадр — все части снимка
+    // согласованы между собой и на один миг. Раньше рендер брал те же данные
+    // пятью отдельными локами (см. FullSnapshot в Snapshots.hpp).
+    const auto now = Clock::now();
+    FullSnapshot f;
+    f.atm = snapshotLocked(now);
+    f.stats = statsSnapshotLocked(now);
+    f.queue = queueSnapshotLocked(now);
+    f.ops = operationsLocked(feedFilter);
+    f.allProcessed = allClientsProcessedLocked();
+    return f;
 }
 
 }  // namespace atmsim

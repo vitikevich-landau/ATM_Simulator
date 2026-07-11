@@ -102,4 +102,20 @@ struct OperationFilter {
     std::optional<std::size_t> last;
 };
 
+// Согласованный «общий» снимок: всё, что нужно ОДНОМУ кадру дашборда, снятое под
+// ОДНИМ захватом mutex_ движка. Раньше рендер брал snapshot()/statsSnapshot()/
+// queueSnapshot()/operations()/allClientsProcessed() пятью отдельными локами — и
+// данные могли разъехаться между вызовами (например, totalServed в atm и stats
+// расходились на единицу). Один захват убирает и рассинхрон, и пятикратную плату
+// за лок на каждый опрос. allProcessed — тот же признак «все клиенты отработаны»,
+// снятый под этим же локом (иначе рендер дёргал бы его отдельным локом на КАЖДЫЙ
+// кадр, минуя кэш снимков).
+struct FullSnapshot {
+    AtmSnapshot atm;
+    StatsSnapshot stats;
+    std::vector<ClientSnapshot> queue;
+    std::vector<OperationRecord> ops;
+    bool allProcessed = false;
+};
+
 }  // namespace atmsim
