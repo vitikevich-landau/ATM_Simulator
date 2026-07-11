@@ -34,6 +34,7 @@ std::string bar(double frac, int width) {
     if (frac > 1.0) frac = 1.0;
     const int filled = static_cast<int>(std::lround(frac * width));
     std::string s;
+    s.reserve(static_cast<std::size_t>(width) * 3);  // глифы █/░ — 3 байта UTF-8
     for (int i = 0; i < width; ++i) s += (i < filled) ? "█" : "░";
     return s;
 }
@@ -41,6 +42,7 @@ std::string bar(double frac, int width) {
 // Повторяет UTF-8 символ n раз (для разделителей из '─').
 std::string repeatUtf8(const char* glyph, int n) {
     std::string s;
+    s.reserve(static_cast<std::size_t>(n) * std::char_traits<char>::length(glyph));
     for (int i = 0; i < n; ++i) s += glyph;
     return s;
 }
@@ -76,7 +78,7 @@ std::string fit(const std::string& s, int width) {
     }
     // Если усекли окрашенную строку — закрываем цвет, чтобы он не «потёк» дальше.
     if (truncated && out.find('\033') != std::string::npos) out += "\033[0m";
-    else for (; w < width; ++w) out += ' ';
+    else if (w < width) out.append(static_cast<std::size_t>(width - w), ' ');  // добивка одним блоком
     return out;
 }
 
@@ -101,6 +103,8 @@ LiveRenderer::LiveRenderer(AtmEngine& engine, const Config& cfg, int forcedWidth
         presenter_ = std::make_unique<scene::ScenePresenter>(width_, sceneRows_,
                                                              cfg_.ui.sceneEffects,
                                                              cfg_.simulation.timeScale);
+        // Канва фиксированного размера — переиспользуем между кадрами.
+        sceneCanvas_.emplace(width_, sceneRows_);
     }
 
     height_ = static_cast<int>(composeLines().size());
@@ -129,51 +133,36 @@ int LiveRenderer::frameRate() const {
 }
 
 std::vector<std::string> LiveRenderer::composeLines() const {
-    // Публичный вариант (тесты, первый расчёт высоты): снимаем свежие снимки
-    // и делегируем сборку. Render-цикл сюда не ходит — у него кэш.
+    // Публичный вариант (тесты, первый расчёт высоты): снимаем свежий согласованный
+    // снимок ОДНИМ локом и делегируем сборку. Render-цикл сюда не ходит — у него кэш.
     OperationFilter feedFilter;
     feedFilter.last = static_cast<std::size_t>(std::clamp(cfg_.ui.eventsTail, 0, 50));
-    return composeLinesFrom(engine_.snapshot(), engine_.statsSnapshot(),
-                            engine_.queueSnapshot(), engine_.operations(feedFilter));
+    const FullSnapshot f = engine_.fullSnapshot(feedFilter);
+    return composeLinesFrom(f.atm, f.stats, f.queue, f.ops, f.allProcessed);
 }
 
 std::vector<std::string> LiveRenderer::composeLinesFrom(
     const AtmSnapshot& s, const StatsSnapshot& st, const std::vector<ClientSnapshot>& q,
-    const std::vector<OperationRecord>& ops) const {
+    const std::vector<OperationRecord>& ops, bool allProcessed) const {
+    // Полный кадр = шапка + (сцена) + таблица, в том же порядке, что и раньше.
+    // Render-цикл собирает его по частям (кэшируя дорогую таблицу); здесь —
+    // цельная сборка для composeLines() (тесты, первичный расчёт высоты).
+    std::vector<std::string> L = composeHeaderLines(s);
+    if (sceneActive_) {
+        for (std::string& line : composeSceneStrip(s, q)) L.push_back(std::move(line));
+    }
+    for (std::string& line : composeTableLines(s, st, q, ops, allProcessed)) {
+        L.push_back(std::move(line));
+    }
+    return L;
+}
+
+std::vector<std::string> LiveRenderer::composeHeaderLines(const AtmSnapshot& s) const {
     const bool color = cfg_.ui.color;
     auto C = [color](const char* code) { return color ? std::string(code) : std::string(); };
     auto R = [color] { return color ? std::string(ansi::reset()) : std::string(); };
 
-    // Сумма со знаком и цветом по направлению: внесение — зелёным «+», снятие —
-    // красным «−»; для проверки баланса суммы нет.
-    auto signedAmount = [&](OperationType op, Money amount) -> std::string {
-        if (op == OperationType::Deposit)  return C(ansi::green()) + "+" + formatMoney(amount) + R();
-        if (op == OperationType::Withdraw) return C(ansi::red())   + "-" + formatMoney(amount) + R();
-        return std::string{};
-    };
-
-    // Длина ленты последних операций — из конфига (ui.events_tail), с разумным
-    // потолком, чтобы битый конфиг не растянул кадр до абсурда. Значение постоянно
-    // в пределах запуска, поэтому высота кадра остаётся стабильной (§4.8.5).
-    // В scene-режиме лента дополнительно ужимается под остаток высоты после
-    // сценической полосы (9 = строки статистики над лентой), но не короче 3.
-    // ops может содержать БОЛЬШЕ записей, чем нужно ленте (кэш render-цикла
-    // берёт с запасом для судеб сцены) — лента показывает feedRows новейших.
-    const int sceneBodyBudget = termHeight_ - 8 - sceneRows_;
-    const int feedRows = sceneActive_
-        ? std::clamp(std::min(cfg_.ui.eventsTail, sceneBodyBudget - 9), 3, 50)
-        : std::clamp(cfg_.ui.eventsTail, 0, 50);
-
     const std::string cur = cfg_.atm.currency;
-
-    // Геометрия: левая колонка (очередь) шире, правая — статистика/лента.
-    const int leftW = std::clamp(width_ - 42, 40, 54);
-    const int rightW = width_ - leftW - 3;              // 3 = " │ "
-    // Число слотов очереди: без сцены — вся высота терминала минус служебные
-    // строки; со сценой — остаток бюджета тела (5 = строки левой колонки
-    // над слотами и под ними). Оба значения постоянны в пределах сессии.
-    const int queueVisible = sceneActive_ ? std::clamp(sceneBodyBudget - 5, 4, 99)
-                                          : std::max(4, termHeight_ - 13);
 
     // Цвет маркера состояния.
     const char* sc = ansi::grey();
@@ -225,24 +214,77 @@ std::vector<std::string> LiveRenderer::composeLinesFrom(
            << (s.lowCash ? std::string(" ") + C(ansi::red()) + "НИЗКАЯ" + R() : std::string{});
         L.push_back(fit(os.str(), width_));
     }
+    return L;
+}
+
+std::vector<std::string> LiveRenderer::composeSceneStrip(
+    const AtmSnapshot& s, const std::vector<ClientSnapshot>& q) const {
+    std::vector<std::string> strip;
+    if (!sceneActive_) return strip;
+    const bool color = cfg_.ui.color;
+    auto C = [color](const char* code) { return color ? std::string(code) : std::string(); };
+    auto R = [color] { return color ? std::string(ansi::reset()) : std::string(); };
 
     // === Сценическая полоса (feature/scene): банкомат и человечки ===
     // Полоса живёт МЕЖДУ шапкой и таблицей: сцена показывает «как это выглядит»,
     // таблица ниже — точные цифры (решение владельца: цифры не жертвуем).
-    // Высота полосы постоянна (sceneRows_), поэтому §4.8.5 не нарушается.
-    if (sceneActive_) {
-        L.push_back(C(ansi::grey()) + repeatUtf8("─", width_) + R());
-        scene::SceneCanvas canvas(width_, sceneRows_);
-        // Живые актёры презентера (двигаются между кадрами); пока он не сделал
-        // ни одного tick (первый кадр, тесты без tick) — статичная сцена по
-        // текущему снимку.
-        if (presenter_ && presenter_->hasTicked()) {
-            scene::composeScene(presenter_->view(), canvas);
-        } else {
-            scene::composeScene(scene::buildSceneView(s, q, width_), canvas);
-        }
-        for (std::string& line : canvas.toLines(color)) L.push_back(std::move(line));
+    // Высота полосы постоянна (sceneRows_), поэтому §4.8.5 не нарушается. Эту
+    // полосу render-цикл пересобирает КАЖДЫЙ кадр (анимация на scene_fps), а
+    // таблицу берёт из кэша — поэтому она вынесена в отдельный хелпер.
+    strip.reserve(static_cast<std::size_t>(sceneRows_) + 1);
+    strip.push_back(C(ansi::grey()) + repeatUtf8("─", width_) + R());
+    // Канва — переиспользуемое поле (composeScene сам её clear()-ит): не
+    // аллоцируем ~22 КБ клеток заново каждый кадр.
+    scene::SceneCanvas& canvas = *sceneCanvas_;
+    // Живые актёры презентера (двигаются между кадрами); пока он не сделал
+    // ни одного tick (первый кадр, тесты без tick) — статичная сцена по
+    // текущему снимку.
+    if (presenter_ && presenter_->hasTicked()) {
+        scene::composeScene(presenter_->view(), canvas);
+    } else {
+        scene::composeScene(scene::buildSceneView(s, q, width_), canvas);
     }
+    for (std::string& line : canvas.toLines(color)) strip.push_back(std::move(line));
+    return strip;
+}
+
+std::vector<std::string> LiveRenderer::composeTableLines(
+    const AtmSnapshot& s, const StatsSnapshot& st, const std::vector<ClientSnapshot>& q,
+    const std::vector<OperationRecord>& ops, bool allProcessed) const {
+    const bool color = cfg_.ui.color;
+    auto C = [color](const char* code) { return color ? std::string(code) : std::string(); };
+    auto R = [color] { return color ? std::string(ansi::reset()) : std::string(); };
+
+    // Сумма со знаком и цветом по направлению: внесение — зелёным «+», снятие —
+    // красным «−»; для проверки баланса суммы нет.
+    auto signedAmount = [&](OperationType op, Money amount) -> std::string {
+        if (op == OperationType::Deposit)  return C(ansi::green()) + "+" + formatMoney(amount) + R();
+        if (op == OperationType::Withdraw) return C(ansi::red())   + "-" + formatMoney(amount) + R();
+        return std::string{};
+    };
+
+    // Длина ленты последних операций — из конфига (ui.events_tail), с разумным
+    // потолком, чтобы битый конфиг не растянул кадр до абсурда. Значение постоянно
+    // в пределах запуска, поэтому высота кадра остаётся стабильной (§4.8.5).
+    // В scene-режиме лента дополнительно ужимается под остаток высоты после
+    // сценической полосы (9 = строки статистики над лентой), но не короче 3.
+    // ops может содержать БОЛЬШЕ записей, чем нужно ленте (кэш render-цикла
+    // берёт с запасом для судеб сцены) — лента показывает feedRows новейших.
+    const int sceneBodyBudget = termHeight_ - 8 - sceneRows_;
+    const int feedRows = sceneActive_
+        ? std::clamp(std::min(cfg_.ui.eventsTail, sceneBodyBudget - 9), 3, 50)
+        : std::clamp(cfg_.ui.eventsTail, 0, 50);
+
+    // Геометрия: левая колонка (очередь) шире, правая — статистика/лента.
+    const int leftW = std::clamp(width_ - 42, 40, 54);
+    const int rightW = width_ - leftW - 3;              // 3 = " │ "
+    // Число слотов очереди: без сцены — вся высота терминала минус служебные
+    // строки; со сценой — остаток бюджета тела (5 = строки левой колонки
+    // над слотами и под ними). Оба значения постоянны в пределах сессии.
+    const int queueVisible = sceneActive_ ? std::clamp(sceneBodyBudget - 5, 4, 99)
+                                          : std::max(4, termHeight_ - 13);
+
+    std::vector<std::string> L;
 
     // === Разделитель с «шапкой» колонок (┬) ===
     L.push_back(C(ansi::grey()) + repeatUtf8("─", leftW + 1) + "┬" +
@@ -377,8 +419,10 @@ std::vector<std::string> LiveRenderer::composeLinesFrom(
                 repeatUtf8("─", width_ - leftW - 2) + R());
     // Подвал: обычно — подсказка команд; когда все клиенты отработаны — баннер
     // завершения с предложением действий. Обе ветки дают РОВНО одну строку,
-    // поэтому высота кадра остаётся постоянной (§4.8.5).
-    if (engine_.allClientsProcessed()) {
+    // поэтому высота кадра остаётся постоянной (§4.8.5). Признак allProcessed
+    // приходит из ОБЩЕГО снимка (fullSnapshot) — раньше здесь был отдельный
+    // захват mutex_ движка на КАЖДЫЙ кадр, минуя кэш снимков.
+    if (allProcessed) {
         L.push_back(fit(C(ansi::green()) + "✓ Симуляция завершена" + R() + C(ansi::grey()) +
                         "  —  restart: новый прогон · stop: выход" + R(), width_));
     } else {
@@ -392,11 +436,12 @@ std::vector<std::string> LiveRenderer::composeLinesFrom(
     return L;
 }
 
-void LiveRenderer::paintFrame(const std::vector<std::string>& lines) {
+void LiveRenderer::paintFrame(std::vector<std::string> lines) {
     // Дифф: в терминал уходят только изменившиеся строки (этап 5). Кадр без
     // изменений не трогает терминал вовсе (и не дёргает outMutex_ — ввод
-    // пользователя не конкурирует с пустыми перерисовками).
-    const std::string body = differ_.diff(lines);
+    // пользователя не конкурирует с пустыми перерисовками). lines принимаем по
+    // значению и отдаём дифферу move'ом (тот забирает кадр как «отрисованный»).
+    const std::string body = differ_.diff(std::move(lines));
     if (body.empty()) return;
 
     // Прячем курсор на время перерисовки (иначе, гоняя его по строкам кадра через
@@ -450,7 +495,18 @@ void LiveRenderer::renderLoop() {
     auto lastSnap = start - snapPeriod;  // первый кадр всегда со свежими снимками
 
     while (running_.load()) {
-        if (!paused_.load()) {
+        // Пауза (открыт полноэкранный overlay): ждём СОБЫТИЯ resume/stop на
+        // sleepCv_ без кадрового таймаута — не будим поток 15-30 раз в секунду
+        // только ради проверки флага и повторного засыпания (это был поллинг).
+        // running_/paused_ переключаются ПОД sleepMutex_ (см. resume()/stop()),
+        // а предикат проверяется под ним же — поэтому пробуждение не теряется.
+        if (paused_.load()) {
+            std::unique_lock<std::mutex> lock(sleepMutex_);
+            sleepCv_.wait(lock, [this] { return !running_.load() || !paused_.load(); });
+            continue;
+        }
+
+        {
             // Заявка от resume(): полный repaint (overlay затёр экран) и
             // мгновенная расстановка актёров. Выполняется ЗДЕСЬ, в render-
             // потоке — differ_ и presenter_ не потокобезопасны.
@@ -461,9 +517,6 @@ void LiveRenderer::renderLoop() {
 
             const auto nowTp = clock::now();
             if (nowTp - lastSnap >= snapPeriod) {
-                cachedSnap_ = engine_.snapshot();
-                cachedStats_ = engine_.statsSnapshot();
-                cachedQueue_ = engine_.queueSnapshot();
                 // Один хвост ленты и для таблицы, и для судеб сцены. Запас «не
                 // меньше 12 записей» нужен только грейс-логике презентера — без
                 // сцены берём ровно столько, сколько просит лента (в т.ч. 0).
@@ -471,7 +524,20 @@ void LiveRenderer::renderLoop() {
                 OperationFilter f;
                 f.last = static_cast<std::size_t>(
                     presenter_ ? std::max(feedWant, 12) : feedWant);
-                cachedOps_ = engine_.operations(f);
+                // Один захват mutex_ движка на весь опрос (fullSnapshot) вместо
+                // пяти раздельных — согласованный снимок и меньше contention.
+                FullSnapshot full = engine_.fullSnapshot(f);
+                cachedSnap_ = std::move(full.atm);
+                cachedStats_ = std::move(full.stats);
+                cachedQueue_ = std::move(full.queue);
+                cachedOps_ = std::move(full.ops);
+                // Пересобираем ДОРОГУЮ табличную часть кадра (шапка + таблица)
+                // ТОЛЬКО сейчас — на refresh_hz, когда реально обновились данные.
+                // Между опросами она байт-в-байт та же; сцена (ниже) анимируется
+                // отдельно на scene_fps, поэтому пересобирается каждый кадр.
+                cachedFrameAbove_ = composeHeaderLines(cachedSnap_);
+                cachedFrameBelow_ = composeTableLines(cachedSnap_, cachedStats_, cachedQueue_,
+                                                      cachedOps_, full.allProcessed);
                 lastSnap = nowTp;
             }
 
@@ -485,7 +551,21 @@ void LiveRenderer::renderLoop() {
                 presenter_->tick(cachedSnap_, cachedQueue_, nowSec, cachedOps_,
                                  snapAgeSec > 0.0 ? snapAgeSec : 0.0);
             }
-            paintFrame(composeLinesFrom(cachedSnap_, cachedStats_, cachedQueue_, cachedOps_));
+
+            // Кадр = кэш шапки + СВЕЖАЯ сцена + кэш таблицы. Между опросами движка
+            // меняется только сцена — шапку и таблицу берём готовыми из кэша, а не
+            // пересобираем весь кадр (десятки ostringstream) на каждый кадр.
+            std::vector<std::string> frame;
+            frame.reserve(cachedFrameAbove_.size() + cachedFrameBelow_.size() +
+                          (sceneActive_ ? static_cast<std::size_t>(sceneRows_) + 1 : 0));
+            for (const std::string& line : cachedFrameAbove_) frame.push_back(line);
+            if (sceneActive_) {
+                for (std::string& line : composeSceneStrip(cachedSnap_, cachedQueue_)) {
+                    frame.push_back(std::move(line));
+                }
+            }
+            for (const std::string& line : cachedFrameBelow_) frame.push_back(line);
+            paintFrame(std::move(frame));
         }
 
         // Дедлайновый пейсинг: следующий кадр строго в start + N*period (а не
@@ -515,7 +595,13 @@ void LiveRenderer::start() {
 }
 
 void LiveRenderer::stop() {
-    running_.store(false);
+    // running_ переключаем ПОД sleepMutex_: render-поток на паузе спит на
+    // sleepCv_ без таймаута, и запись флага под общим мьютексом + notify
+    // гарантируют, что стоп не потеряется (иначе join() завис бы навсегда).
+    {
+        std::lock_guard<std::mutex> lock(sleepMutex_);
+        running_.store(false);
+    }
     sleepCv_.notify_all();  // разбудить render-поток из сна
     if (thread_.joinable()) thread_.join();
 }
@@ -529,7 +615,14 @@ void LiveRenderer::resume() {
     // просим render-поток сделать полный repaint и расставить актёров сцены
     // мгновенно (флаг — потому что differ_/presenter_ принадлежат ему).
     teleportOnResume_.store(true);
-    paused_.store(false);
+    // Снимаем паузу ПОД sleepMutex_ и будим поток: он спит на sleepCv_ без
+    // таймаута, пока paused_ (см. renderLoop) — без этого resume заметился бы
+    // только на следующем кадре, а без общего мьютекса пробуждение терялось бы.
+    {
+        std::lock_guard<std::mutex> lock(sleepMutex_);
+        paused_.store(false);
+    }
+    sleepCv_.notify_all();
 }
 
 }  // namespace atmsim
