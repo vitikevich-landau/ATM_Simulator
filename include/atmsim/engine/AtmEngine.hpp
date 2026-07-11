@@ -79,6 +79,11 @@ public:
     std::optional<Money> balanceOf(ClientId id) const;         // команда balance
     std::vector<OperationRecord> operations(const OperationFilter& filter) const; // operations
 
+    // Единый согласованный снимок для одного кадра дашборда: atm+stats+queue+
+    // лента(feedFilter)+allProcessed под ОДНИМ захватом mutex_ (см. FullSnapshot
+    // в Snapshots.hpp). Рендер-цикл зовёт именно его вместо пяти раздельных локов.
+    FullSnapshot fullSnapshot(const OperationFilter& feedFilter) const;
+
     // Сумма балансов всех счетов — для проверки инварианта денег и статистики.
     Money accountsTotal() const;
 
@@ -93,6 +98,11 @@ private:
     // Вспомогательные (вызываются строго из потока прихода / под локом).
     Client makeClient();                              // только поток прихода
     double modelSecondsWaited(const Client& c) const; // сколько модельных сек. ждёт
+    // Тот же расчёт, но с ГОТОВОЙ отметкой времени: снимки/прополка очереди
+    // берут Clock::now() ОДИН раз на весь проход и передают его сюда — так все
+    // waited-времена в одном снимке согласованы на один миг, а не «плывут» от
+    // клиента к клиенту, и часы не дёргаются на каждого из десятков клиентов.
+    double modelSecondsWaited(const Client& c, std::chrono::steady_clock::time_point now) const;
     // Уход по терпению (§4.1): удалить из очереди всех, кто уже перетерпел, и
     // найти ближайший дедлайн следующего ухода. Оба метода вызываются ПОД mutex_.
     bool pruneExpiredQueueLocked();
@@ -114,6 +124,17 @@ private:
     // Решение «уйти/остаться» для всех в очереди при старте ТО (§4.5). Вызывается
     // из потока обслуживания, ПОД уже захваченным mutex_ (потому «Locked»).
     void applyMaintenanceRenegingLocked();
+
+    // Тела снимков БЕЗ захвата мьютекса (вызывающий уже держит mutex_). Публичные
+    // snapshot()/statsSnapshot()/queueSnapshot()/operations()/allClientsProcessed()
+    // — тонкие обёртки, берущие лок и делегирующие сюда; fullSnapshot() вызывает
+    // все пятеро под ОДНИМ локом с ОДНИМ Clock::now(). now передаётся снаружи,
+    // чтобы все части общего снимка были согласованы на один миг.
+    AtmSnapshot snapshotLocked(std::chrono::steady_clock::time_point now) const;
+    StatsSnapshot statsSnapshotLocked(std::chrono::steady_clock::time_point now) const;
+    std::vector<ClientSnapshot> queueSnapshotLocked(std::chrono::steady_clock::time_point now) const;
+    std::vector<OperationRecord> operationsLocked(const OperationFilter& filter) const;
+    bool allClientsProcessedLocked() const;
 
     Config cfg_;
 
@@ -154,6 +175,16 @@ private:
     // потока прихода. Пересекаться они не будут.
     std::mt19937_64 serviceRng_;       // только поток обслуживания
     std::mt19937_64 arrivalRng_;       // только поток прихода
+
+    // Распределения генерации клиентов. Их параметры фиксированы конфигом на
+    // весь прогон, поэтому строим ОДИН раз в конструкторе, а не заново на
+    // каждого клиента (discrete_distribution ещё и аллоцирует вектор весов).
+    // Они stateless (состояния между вызовами не хранят), так что вынос в поля
+    // НЕ меняет последовательность чисел из arrivalRng_ — прогон воспроизводим
+    // бит-в-бит. Трогает их ТОЛЬКО поток прихода (makeClient), как и arrivalRng_.
+    std::discrete_distribution<int> opDist_;
+    std::uniform_int_distribution<std::int64_t> amountDist_;
+    std::uniform_int_distribution<int> patienceDist_;
 
     std::optional<Client> currentClient_;  // кого обслуживаем сейчас (защищён mutex_)
 

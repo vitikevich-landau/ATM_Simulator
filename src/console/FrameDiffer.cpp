@@ -1,10 +1,12 @@
 #include "atmsim/console/FrameDiffer.hpp"
 
+#include <utility>  // std::move
+
 #include "atmsim/console/Terminal.hpp"
 
 namespace atmsim {
 
-std::string FrameDiffer::diff(const std::vector<std::string>& lines) {
+std::string FrameDiffer::diff(std::vector<std::string> lines) {
     std::string out;
     for (std::size_t i = 0; i < lines.size(); ++i) {
         // Строка не изменилась с прошлого кадра — пропускаем.
@@ -21,7 +23,7 @@ std::string FrameDiffer::diff(const std::vector<std::string>& lines) {
             out += ansi::clearToLineEnd();
         }
     }
-    prev_ = lines;
+    prev_ = std::move(lines);
     valid_ = true;
     return out;
 }

@@ -9,9 +9,15 @@ namespace atmsim::scene {
 namespace {
 
 // Ширина строки в КОЛОНКАХ терминала = числу кодовых точек (GlyphSet
-// гарантирует одноколоночность каждого глифа).
+// гарантирует одноколоночность каждого глифа). Считаем на месте — число
+// кодовых точек равно числу байтов, НЕ являющихся продолжением (10xxxxxx), —
+// без материализации временной u32string ради одного .size().
 int columnsOf(const std::string& utf8Text) {
-    return static_cast<int>(utf8::decode(utf8Text).size());
+    int cols = 0;
+    for (unsigned char b : utf8Text) {
+        if ((b & 0xC0) != 0x80) ++cols;
+    }
+    return cols;
 }
 
 // Пишет текст с центрированием в поле [x, x + fieldWidth).

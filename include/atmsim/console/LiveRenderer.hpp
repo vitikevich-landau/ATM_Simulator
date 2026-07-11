@@ -18,12 +18,14 @@
 #include <condition_variable>
 #include <memory>
 #include <mutex>
+#include <optional>
 #include <string>
 #include <thread>
 #include <vector>
 
 #include "atmsim/config/Config.hpp"
 #include "atmsim/console/FrameDiffer.hpp"
+#include "atmsim/console/scene/SceneCanvas.hpp"  // переиспользуемая канва сцены (полный тип для optional)
 // Полный тип нужен здесь (а не forward-декларация), потому что деструктор
 // LiveRenderer определён inline в этом заголовке (обход LNK2005 на MSVC), а
 // inline-деструктор разрушает unique_ptr<ScenePresenter> — тип обязан быть
@@ -92,13 +94,26 @@ private:
     // снимки честно опрашиваются на refresh_hz); без сцены — refresh_hz.
     // Одна формула для цикла кадров и подписи в шапке.
     int frameRate() const;
-    // Сборка кадра из ГОТОВЫХ снимков — рабочая лошадка composeLines() и
-    // render-цикла (тот держит снимки в кэше и опрашивает движок на
-    // refresh_hz, а кадры рисует на scene_fps — частоты разделены).
+    // Сборка ПОЛНОГО кадра из готовых снимков — используется composeLines()
+    // (тесты, первичный расчёт высоты). Render-цикл сюда НЕ ходит: он собирает
+    // кадр из трёх частей ниже, пересобирая дорогую таблицу лишь на refresh_hz.
     std::vector<std::string> composeLinesFrom(const AtmSnapshot& s, const StatsSnapshot& st,
                                               const std::vector<ClientSnapshot>& q,
-                                              const std::vector<OperationRecord>& ops) const;
-    void paintFrame(const std::vector<std::string>& lines);
+                                              const std::vector<OperationRecord>& ops,
+                                              bool allProcessed) const;
+    // Кадр разбит на три части, чтобы render-цикл пересобирал только то, что
+    // реально изменилось: шапка и таблица — функции ТОЛЬКО от снимков (меняются
+    // на refresh_hz), сценическая полоса анимируется на scene_fps. Прежде
+    // composeLinesFrom строил весь кадр (~десятки ostringstream) на КАЖДЫЙ кадр,
+    // и дифф-рендер выбрасывал ~73% как неизменившиеся.
+    std::vector<std::string> composeHeaderLines(const AtmSnapshot& s) const;  // шапка (2 строки)
+    std::vector<std::string> composeTableLines(const AtmSnapshot& s, const StatsSnapshot& st,
+                                               const std::vector<ClientSnapshot>& q,
+                                               const std::vector<OperationRecord>& ops,
+                                               bool allProcessed) const;      // таблица
+    std::vector<std::string> composeSceneStrip(const AtmSnapshot& s,
+                                               const std::vector<ClientSnapshot>& q) const;  // сцена
+    void paintFrame(std::vector<std::string> lines);
 
     AtmEngine& engine_;
     Config cfg_;
@@ -149,6 +164,16 @@ private:
     StatsSnapshot cachedStats_;        // ...а кадры рисуются на scene_fps из кэша
     std::vector<ClientSnapshot> cachedQueue_;
     std::vector<OperationRecord> cachedOps_;
+
+    // Кэш ГОТОВОЙ табличной части кадра (шапка над сценой + таблица под ней).
+    // Пересобирается только при обновлении кэша снимков (на refresh_hz), а не на
+    // каждом кадре сцены: между опросами движка эти строки байт-в-байт те же.
+    std::vector<std::string> cachedFrameAbove_;  // шапка (2 строки)
+    std::vector<std::string> cachedFrameBelow_;  // таблица (разделители+колонки+подвал)
+    // Канва сцены переиспользуется между кадрами (composeScene сам её clear()-ит),
+    // чтобы не аллоцировать ~22 КБ клеток заново каждый кадр. Есть только при
+    // sceneActive_; mutable — заполняется в const-хелпере сборки кадра.
+    mutable std::optional<scene::SceneCanvas> sceneCanvas_;
 
     // resume() (консольный поток) просит render-поток: полный repaint (overlay
     // затёр экран) + мгновенная расстановка актёров. Атомарный флаг вместо
