@@ -555,17 +555,18 @@ void LiveRenderer::renderLoop() {
             // Кадр = кэш шапки + СВЕЖАЯ сцена + кэш таблицы. Между опросами движка
             // меняется только сцена — шапку и таблицу берём готовыми из кэша, а не
             // пересобираем весь кадр (десятки ostringstream) на каждый кадр.
-            std::vector<std::string> frame;
-            frame.reserve(cachedFrameAbove_.size() + cachedFrameBelow_.size() +
-                          (sceneActive_ ? static_cast<std::size_t>(sceneRows_) + 1 : 0));
-            for (const std::string& line : cachedFrameAbove_) frame.push_back(line);
+            // (frameLines, а не frame — чтобы не перекрывать счётчик кадров frame ниже.)
+            std::vector<std::string> frameLines;
+            frameLines.reserve(cachedFrameAbove_.size() + cachedFrameBelow_.size() +
+                               (sceneActive_ ? static_cast<std::size_t>(sceneRows_) + 1 : 0));
+            for (const std::string& line : cachedFrameAbove_) frameLines.push_back(line);
             if (sceneActive_) {
                 for (std::string& line : composeSceneStrip(cachedSnap_, cachedQueue_)) {
-                    frame.push_back(std::move(line));
+                    frameLines.push_back(std::move(line));
                 }
             }
-            for (const std::string& line : cachedFrameBelow_) frame.push_back(line);
-            paintFrame(std::move(frame));
+            for (const std::string& line : cachedFrameBelow_) frameLines.push_back(line);
+            paintFrame(std::move(frameLines));
         }
 
         // Дедлайновый пейсинг: следующий кадр строго в start + N*period (а не
