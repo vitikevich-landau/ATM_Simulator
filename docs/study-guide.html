@@ -187,7 +187,7 @@
 <div class="hero">
   <div class="wrap hero-inner">
     <div>
-      <p class="prompt"><span class="tick">$</span> ./atm_sim --live &nbsp;<span class="dim"># учебный симулятор СМО на C++20</span></p>
+      <p class="prompt"><span class="tick">$</span> ./atm_sim &nbsp;<span class="dim"># учебный симулятор СМО на C++20; живой режим по умолчанию (ui.live_mode)</span></p>
       <h1>Карта банкомата<br>для <span class="cy">изучающего</span></h1>
       <p class="lede">Многопоточный симулятор очереди к банкомату с живым консольным дашбордом.
         Ниже — что здесь стоит понять: архитектура «один писатель — много читателей», ключевые
@@ -421,7 +421,7 @@
       <div class="card lvl-cyan">
         <div class="card-top"><span class="lvl-tag">продвинутый</span></div>
         <h3>Прогресс через параметры формулы</h3>
-        <span class="file">engine/AtmEngine.hpp:160</span>
+        <span class="file">engine/AtmEngine.hpp:199</span>
         <p class="why">Спящий поток не может обновлять «процент». Движок публикует тройку (план / накоплено / старт слайса), а <code>snapshot()</code> довычисляет прогресс в момент чтения.</p>
         <div class="note"><b>Идея в копилку:</b> если производитель не может часто обновлять значение — публикуй параметры формулы, вычисляй у читателя. Пауза (слайс закрыт) честно замораживает шкалу.</div>
       </div>
@@ -445,7 +445,7 @@
       <div class="card lvl-cyan">
         <div class="card-top"><span class="lvl-tag">продвинутый</span></div>
         <h3>Детерминизм: два RNG, <code>splitmix64</code></h3>
-        <span class="file">engine/AtmEngine.hpp:151 · scene/ActorAnim.cpp:22</span>
+        <span class="file">engine/AtmEngine.hpp:172 · scene/ActorAnim.cpp:22</span>
         <p class="why">У <code>mt19937_64</code> нет синхронизации — один движок на два потока это гонка. Держат два независимых. В сцене вместо RNG — хэш <code>splitmix64(id, окно)</code>.</p>
         <div class="note"><b>Hash-based randomness:</b> одна пара (id, момент) всегда даёт одну позу → golden-тесты не флапают, состояние хранить не нужно. Разные аспекты — разные соли, иначе скрытая корреляция.</div>
       </div>
@@ -565,7 +565,7 @@
         <li><span class="tag-green">🟢</span> — единый <code>fullSnapshot()</code> под одним локом вместо пяти; <code>std::erase_if</code> вместо пересборки очереди; пауза ждёт событие, а не поллит; мелкие <code>reserve</code>.</li>
       </ul>
     </div>
-    <p>Разбор и правки — на ветке <code>perf/part1-optimizations</code>. Изменения поведение-сохраняющие: прогон
+    <p>Разбор и правки сделаны в ветке <code>perf/part1-optimizations</code> (влита в main). Изменения поведение-сохраняющие: прогон
       воспроизводим бит-в-бит, все 154 теста + ThreadSanitizer + AddressSanitizer зелёные. Осознанно <b>не</b> тронуты
       flush логгера (гарантия при падении) и пересоздание <code>normal_distribution</code> (сохраняет воспроизводимость).</p>
   </div>
