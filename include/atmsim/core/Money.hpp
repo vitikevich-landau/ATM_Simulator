@@ -3,7 +3,9 @@
 //  Money.hpp — денежный тип проекта.
 // ============================================================================
 #include <cstdint>
+#include <optional>
 #include <string>
+#include <string_view>
 
 namespace atmsim {
 
@@ -21,9 +23,53 @@ using Money = std::int64_t;
 // От этой константы зависит форматирование (2 знака после точки).
 inline constexpr Money kMinorUnitsPerMajor = 100;
 
-// Форматирует сумму для вывода человеку:
+// Форматирует сумму БЕЗ валюты и группировки:
 //   50000 -> "500.00",  5 -> "0.05",  0 -> "0.00",  -134000 -> "-1340.00".
-// Группировку разрядов (пробелы в "482 350.00") добавим на этапе визуализации (M6).
+// Базовый «сырой» вид — для технического лога, CSV-экспорта и тестов, где важен
+// стабильный машинный формат, а не локализованное представление. Человеку сумму
+// показывает перегрузка ниже (с валютой и группировкой разрядов).
 std::string formatMoney(Money minor);
+
+// --- Локализованное отображение денег под валюту (§ визуализация) -----------
+// Как показать сумму человеку под конкретную валюту: символ и его позиция,
+// разделитель разрядов (группировка) и десятичный знак. Значения берутся из
+// встроенной таблицы по коду валюты (builtinCurrencyFormat) и могут быть
+// переопределены в конфиге (atm.currency_format) через CurrencyOverride.
+struct CurrencyFormat {
+    std::string symbol;             // "€"/"$"/… ; ПУСТО -> печатается code
+    std::string code = "EUR";       // ISO-код валюты (и запасной токен, если символа нет)
+    bool  symbolBefore = false;     // "$1,234.56" (true) vs "1 234.56 €" (false)
+    bool  spaceBetween = true;      // пробел между токеном валюты и числом
+    std::string groupSep = " ";     // разделитель разрядов; ПУСТО -> без группировки
+    std::string decimalSep = ".";   // десятичный разделитель
+    int   decimals = 2;             // знаков после разделителя при выводе
+};
+
+// Переопределения формата из конфига. Все поля опциональны: заданное — перекрывает
+// значение из встроенной таблицы; пустой объект -> формат целиком из таблицы.
+struct CurrencyOverride {
+    std::optional<std::string> symbol;            // "" -> печатать код валюты
+    std::optional<bool>        symbolBefore;
+    std::optional<bool>        spaceBetween;
+    std::optional<std::string> groupSeparator;    // "" -> без группировки
+    std::optional<std::string> decimalSeparator;
+    std::optional<int>         decimals;
+};
+
+// Встроенный формат для кода валюты (EUR/USD/RUB/GBP/JPY + разумный fallback для
+// неизвестного кода: код как токен, группировка пробелом). Десятичный знак по
+// умолчанию '.' единообразно с проектом; специфичны символ, его позиция и
+// разделитель разрядов.
+CurrencyFormat builtinCurrencyFormat(std::string_view code);
+
+// Итоговый формат = встроенная таблица по коду + переопределения из конфига.
+CurrencyFormat resolveCurrencyFormat(std::string_view code, const CurrencyOverride& ov);
+
+// Форматирует сумму под валюту: группирует разряды, ставит символ/код и
+// разделители по CurrencyFormat.
+//   EUR: 50000000 -> "500 000.00 €";   USD: -> "$500,000.00";   0 -> "0.00 €".
+// withCurrency=false — только число без токена валюты (для плотных колонок
+// дашборда: очередь и лента, где символ на каждой строке был бы шумом).
+std::string formatMoney(Money minor, const CurrencyFormat& fmt, bool withCurrency = true);
 
 }  // namespace atmsim

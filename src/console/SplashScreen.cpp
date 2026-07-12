@@ -57,7 +57,9 @@ std::vector<SplashItem> splashChecklist(const Config& cfg) {
     std::vector<SplashItem> items;
     items.push_back({"инициализация терминала", ""});
     items.push_back(
-        {"загрузка кассет", formatMoney(cfg.atm.initialCash) + " " + cfg.atm.currency});
+        {"загрузка кассет",
+         formatMoney(cfg.atm.initialCash,
+                     resolveCurrencyFormat(cfg.atm.currency, cfg.atm.currencyOverride))});
     items.push_back({"связь с процессингом", ""});
     items.push_back({"журнал операций", cfg.logging.file});
     {

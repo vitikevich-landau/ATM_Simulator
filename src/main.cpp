@@ -68,8 +68,8 @@ void printFinalReport(const StatsSnapshot& st, const AtmSnapshot& s, const Confi
     std::cout << "Факт. загрузка:       " << st.utilization << '\n';
     std::cout << std::setprecision(0) << "Аптайм:               " << st.uptimeSeconds << " c\n";
     std::cout.unsetf(std::ios::floatfield);
-    std::cout << "Касса:                " << formatMoney(s.cashboxBalance) << ' '
-              << cfg.atm.currency << '\n';
+    const CurrencyFormat cur = resolveCurrencyFormat(cfg.atm.currency, cfg.atm.currencyOverride);
+    std::cout << "Касса:                " << formatMoney(s.cashboxBalance, cur) << '\n';
 }
 
 // Один прогон симуляции «от и до»: движок + его потоки (RAII) + консоль. Потоки

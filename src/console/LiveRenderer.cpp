@@ -87,7 +87,8 @@ std::string fit(const std::string& s, int width) {
 
 LiveRenderer::LiveRenderer(AtmEngine& engine, const Config& cfg, int forcedWidth,
                            int forcedHeight)
-    : engine_(engine), cfg_(cfg) {
+    : engine_(engine), cfg_(cfg),
+      currency_(resolveCurrencyFormat(cfg.atm.currency, cfg.atm.currencyOverride)) {
     // Размеры терминала — один раз при создании (ресайз на лету — v2).
     // Принудительные размеры (>0) — только для тестов, см. LiveRenderer.hpp.
     width_ = std::clamp(forcedWidth > 0 ? forcedWidth : Terminal::width(), 60, 200);
@@ -163,8 +164,6 @@ std::vector<std::string> LiveRenderer::composeHeaderLines(const AtmSnapshot& s) 
     auto C = [color](const char* code) { return color ? std::string(code) : std::string(); };
     auto R = [color] { return color ? std::string(ansi::reset()) : std::string(); };
 
-    const std::string cur = cfg_.atm.currency;
-
     // Цвет маркера состояния.
     const char* sc = ansi::grey();
     switch (s.state) {
@@ -213,7 +212,7 @@ std::vector<std::string> LiveRenderer::composeHeaderLines(const AtmSnapshot& s) 
             os << "[" << (s.lowCash ? C(ansi::red()) : C(ansi::green())) << bar(cashFrac, 16) << R()
                << "] ";
         }
-        os << C(cashColor) << formatMoney(s.cashboxBalance) << R() << ' ' << cur
+        os << C(cashColor) << formatMoney(s.cashboxBalance, currency_) << R()
            << (s.lowCash ? std::string(" ") + C(ansi::red()) + "НИЗКАЯ" + R() : std::string{});
         L.push_back(fit(os.str(), width_));
     }
@@ -261,8 +260,10 @@ std::vector<std::string> LiveRenderer::composeTableLines(
     // Сумма со знаком и цветом по направлению: внесение — зелёным «+», снятие —
     // красным «−»; для проверки баланса суммы нет.
     auto signedAmount = [&](OperationType op, Money amount) -> std::string {
-        if (op == OperationType::Deposit)  return C(ansi::green()) + "+" + formatMoney(amount) + R();
-        if (op == OperationType::Withdraw) return C(ansi::red())   + "-" + formatMoney(amount) + R();
+        // Компактно (без символа валюты): в очереди/ленте символ на каждой строке
+        // был бы шумом — он есть у кассы в шапке. Группировка разрядов остаётся.
+        if (op == OperationType::Deposit)  return C(ansi::green()) + "+" + formatMoney(amount, currency_, false) + R();
+        if (op == OperationType::Withdraw) return C(ansi::red())   + "-" + formatMoney(amount, currency_, false) + R();
         return std::string{};
     };
 
