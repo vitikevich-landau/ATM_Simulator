@@ -60,6 +60,11 @@ const std::vector<StageSlice>& serviceStagePlan(OperationType op);
 // (op, progress) всегда даёт один и тот же этап.
 ServiceStage serviceStageAt(OperationType op, double progress);
 
+// Метка-заглушка для НЕДОСТИЖИМОГО значения этапа (см. to_string). Держим её
+// одной константой, чтобы источник и тест (stage_names_are_human_readable)
+// сверялись с одним и тем же значением, а не с двумя разъезжающимися литералами.
+inline constexpr const char* kUnknownStageLabel = "?";
+
 // Человекочитаемое название этапа для дашборда/статуса — «что делает клиент».
 std::string to_string(ServiceStage s);
 

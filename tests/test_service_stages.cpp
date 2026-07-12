@@ -121,7 +121,7 @@ TEST(stage_names_are_human_readable) {
         for (const auto& s : serviceStagePlan(op)) {
             const std::string name = to_string(s.stage);
             CHECK(!name.empty());
-            CHECK(name != "?");
+            CHECK(name != kUnknownStageLabel);  // сверяемся с тем же сентинелом, что и источник
             CHECK(displayColumns(name) <= 19);
         }
     }

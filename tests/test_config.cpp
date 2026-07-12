@@ -36,6 +36,69 @@ TEST(config_reads_all_fields) {
     CHECK(c.ui.liveMode == true);
 }
 
+// currency_format переопределяет формат валюты поверх встроенной таблицы:
+// заданные поля перекрывают, незаданные берутся из таблицы по коду валюты.
+TEST(config_reads_currency_format_override) {
+    const Config c = ConfigLoader::loadFromString(R"({
+      "atm": { "currency": "USD", "currency_format": {
+        "symbol": "$", "symbol_position": "after", "space_between": true,
+        "group_separator": " ", "decimal_separator": ",", "decimals": 3 } }
+    })");
+    CHECK(c.atm.currencyOverride.symbolBefore.has_value());
+    CHECK(*c.atm.currencyOverride.symbolBefore == false);   // "after"
+    CHECK(c.atm.currencyOverride.decimals.has_value());
+    CHECK_EQ(*c.atm.currencyOverride.decimals, 3);
+    const CurrencyFormat f = resolveCurrencyFormat(c.atm.currency, c.atm.currencyOverride);
+    CHECK_EQ(formatMoney(123'456, f), std::string("1 234,560 $"));  // группа " ", десятичная ",", 3 знака
+}
+
+// symbol_position принимает только "before"/"after": опечатка не должна молча
+// становиться "after" и менять весь вывод сумм (как прочие enum-поля конфига).
+TEST(config_rejects_bad_symbol_position) {
+    bool threw = false;
+    try {
+        ConfigLoader::loadFromString(
+            R"({"atm": {"currency_format": {"symbol_position": "sideways"}}})");
+    } catch (const ConfigError&) {
+        threw = true;
+    }
+    CHECK(threw);
+    // Валидные значения проходят.
+    const Config before = ConfigLoader::loadFromString(
+        R"({"atm": {"currency_format": {"symbol_position": "before"}}})");
+    CHECK(*before.atm.currencyOverride.symbolBefore == true);
+    const Config after = ConfigLoader::loadFromString(
+        R"({"atm": {"currency_format": {"symbol_position": "after"}}})");
+    CHECK(*after.atm.currencyOverride.symbolBefore == false);
+}
+
+// decimals вне 0..6 -> ConfigError (иначе строка денег раздулась бы нулями).
+TEST(config_rejects_bad_currency_decimals) {
+    bool threw = false;
+    try {
+        ConfigLoader::loadFromString(R"({"atm": {"currency_format": {"decimals": 9}}})");
+    } catch (const ConfigError&) {
+        threw = true;
+    }
+    CHECK(threw);
+}
+
+// Round-trip: реальный config/default_config.json грузится через ConfigLoader и
+// доезжает до полей. Проверяем НЕ-дефолтные значения: если ключ переименуют в
+// одном месте (загрузчик или файл), value(key, default) молча вернул бы дефолт —
+// и этот тест упал бы ГРОМКО, а не рассинхронился незаметно. Заодно ловит битый
+// JSON в файле (например, висячую запятую после правки комментариев).
+TEST(config_default_file_round_trips) {
+    const Config c = ConfigLoader::loadFromFile("config/default_config.json");
+    CHECK_EQ(c.clients.count, 1000);                    // != дефолт 50
+    CHECK_EQ(c.clients.arrivalRatePerMinute, 20.0);     // != дефолт 4.0
+    CHECK_EQ(c.clients.amountRange.max, Money(300000)); // != дефолт 3000000
+    CHECK_EQ(c.clients.walkSeconds.max, 3.0);           // != дефолт 0.0
+    CHECK_EQ(c.serviceTime.meanSeconds, 5.0);           // != дефолт 25.0
+    CHECK(c.ui.scene == true);                          // != дефолт false
+    CHECK_EQ(c.atm.currency, std::string("EUR"));
+}
+
 // Комментарии //… и /*…*/ в конфиге допускаются (для документирования файла) и
 // не мешают чтению значений.
 TEST(config_allows_comments) {

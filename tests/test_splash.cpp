@@ -41,7 +41,7 @@ TEST(splash_checklist_reflects_config) {
     for (const SplashItem& it : items) CHECK(!it.name.empty());
 
     const std::string all = flatten(items);
-    CHECK(all.find("500000.00 EUR") != std::string::npos);   // касса
+    CHECK(all.find("500 000.00 €") != std::string::npos);    // касса (EUR: символ + группировка разрядов)
     CHECK(all.find("atm_sim.log") != std::string::npos);     // журнал
     CHECK(all.find("poisson") != std::string::npos);         // режим прихода
     CHECK(all.find("20/мин") != std::string::npos);          // интенсивность

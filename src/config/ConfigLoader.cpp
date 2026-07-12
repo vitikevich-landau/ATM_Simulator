@@ -83,6 +83,13 @@ void validate(const Config& c) {
     if (c.atm.initialCash < 0 || c.atm.lowCashThreshold < 0) {
         throw ConfigError("значения кассы не могут быть отрицательными");
     }
+    // Число знаков после разделителя уходит в построение строки денег (дополнение
+    // нулями/усечение). Отрицательное бессмысленно, а абсурдно большое раздуло бы
+    // строку сотнями нулей — ограничиваем разумным диапазоном.
+    if (c.atm.currencyOverride.decimals &&
+        (*c.atm.currencyOverride.decimals < 0 || *c.atm.currencyOverride.decimals > 6)) {
+        throw ConfigError("atm.currency_format.decimals должен быть в диапазоне 0..6");
+    }
     if (c.serviceTime.minSeconds < 0 || c.serviceTime.meanSeconds < 0 ||
         c.serviceTime.stddevSeconds < 0) {
         throw ConfigError("параметры времени обслуживания не могут быть отрицательными");
@@ -171,6 +178,36 @@ Config ConfigLoader::loadFromString(const std::string& jsonText) {
             c.atm.initialCash = a.value("initial_cash", c.atm.initialCash);
             c.atm.lowCashThreshold = a.value("low_cash_threshold", c.atm.lowCashThreshold);
             c.atm.currency = a.value("currency", c.atm.currency);
+            // Необязательное переопределение формата валюты. Заданные поля
+            // перекрывают встроенную таблицу (resolveCurrencyFormat) при выводе.
+            // symbol_position: "before"/"after"; group_separator "" — без группировки.
+            if (a.contains("currency_format")) {
+                const auto& cf = a.at("currency_format");
+                CurrencyOverride ov;
+                if (cf.contains("symbol"))
+                    ov.symbol = cf.at("symbol").get<std::string>();
+                if (cf.contains("symbol_position")) {
+                    // Как и прочие строковые enum-поля конфига (arrival_mode,
+                    // distribution), неизвестное написание не глотаем молча (иначе
+                    // опечатка «befor» тихо дала бы "after" и изменила весь вывод
+                    // сумм), а отвергаем с понятной ошибкой.
+                    const std::string pos = cf.at("symbol_position").get<std::string>();
+                    if (pos != "before" && pos != "after") {
+                        throw ConfigError("atm.currency_format.symbol_position должен быть "
+                                          "\"before\" или \"after\" (получено: '" + pos + "')");
+                    }
+                    ov.symbolBefore = (pos == "before");
+                }
+                if (cf.contains("space_between"))
+                    ov.spaceBetween = cf.at("space_between").get<bool>();
+                if (cf.contains("group_separator"))
+                    ov.groupSeparator = cf.at("group_separator").get<std::string>();
+                if (cf.contains("decimal_separator"))
+                    ov.decimalSeparator = cf.at("decimal_separator").get<std::string>();
+                if (cf.contains("decimals"))
+                    ov.decimals = cf.at("decimals").get<int>();
+                c.atm.currencyOverride = ov;
+            }
         }
 
         if (j.contains("clients")) {

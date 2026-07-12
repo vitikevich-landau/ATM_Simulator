@@ -27,10 +27,12 @@ std::string formatTime(std::chrono::system_clock::time_point tp) {
     return "??:??:??";
 }
 
-void printRecord(const OperationRecord& r) {
+void printRecord(const OperationRecord& r, const CurrencyFormat& cur) {
+    // Суммы в строке журнала — компактно (без символа валюты, withCurrency=false):
+    // символ на каждой строке ленты был бы шумом, группировка разрядов остаётся.
     std::cout << "  [" << formatTime(r.timestamp) << "] #" << r.clientId << ' ' << to_string(r.type);
-    if (r.type != OperationType::CheckBalance) std::cout << ' ' << formatMoney(r.amount);
-    if (r.success) std::cout << " — успех, баланс " << formatMoney(r.balanceAfter);
+    if (r.type != OperationType::CheckBalance) std::cout << ' ' << formatMoney(r.amount, cur, false);
+    if (r.success) std::cout << " — успех, баланс " << formatMoney(r.balanceAfter, cur, false);
     else std::cout << " — отказ (" << r.errorMessage << ')';
     std::cout << '\n';
 }
@@ -38,7 +40,8 @@ void printRecord(const OperationRecord& r) {
 }  // namespace
 
 AdminConsole::AdminConsole(AtmEngine& engine, const Config& cfg)
-    : engine_(engine), cfg_(cfg) {}
+    : engine_(engine), cfg_(cfg),
+      currency_(resolveCurrencyFormat(cfg.atm.currency, cfg.atm.currencyOverride)) {}
 
 // ---------------------------------------------------------------------------
 //  Печать отчётов
@@ -61,7 +64,7 @@ void AdminConsole::printHelp() const {
         "  scene [on|off]                    — анимированная сцена над таблицей (нужен\n"
         "                                      терминал от ~84x30; без аргумента — переключить)\n"
         "  export <file>                     — выгрузить журнал операций в CSV\n"
-        "  restart                           — новый прогон с нуля\n"
+        "  restart                           — новый прогон (перечитывает конфиг с диска)\n"
         "  stop                              — плавно остановить и выйти\n";
 }
 
@@ -95,9 +98,10 @@ void AdminConsole::printStatus() const {
     }
     std::cout << "В очереди:         " << s.queueLength
               << "  (макс. за прогон " << s.maxQueueLength << ")\n";
-    std::cout << "Обслужено:         " << s.totalServed << '\n';
+    std::cout << "Обслужено:         " << s.totalServed << " / " << cfg_.clients.count
+              << " (всего за прогон)\n";
     std::cout << "Ушли (всего):      " << s.totalLeft << '\n';
-    std::cout << "Касса:             " << formatMoney(s.cashboxBalance) << ' ' << cfg_.atm.currency
+    std::cout << "Касса:             " << formatMoney(s.cashboxBalance, currency_)
               << (s.lowCash ? "  [НИЗКАЯ КАССА]" : "") << '\n';
     if (s.state == AtmState::Maintenance) {
         std::cout << "ТО: ";
@@ -118,7 +122,8 @@ void AdminConsole::printQueue() const {
     for (std::size_t i = 0; i < q.size(); ++i) {
         const ClientSnapshot& c = q[i];
         std::cout << "  " << (i + 1) << ". #" << c.id << ' ' << to_string(c.requestedOperation);
-        if (c.requestedOperation != OperationType::CheckBalance) std::cout << ' ' << formatMoney(c.amount);
+        if (c.requestedOperation != OperationType::CheckBalance)
+            std::cout << ' ' << formatMoney(c.amount, currency_, false);
         std::cout << "  ждёт " << static_cast<long>(c.waitedSeconds)
                   << " c, терпение осталось " << static_cast<long>(c.remainingPatience) << " c\n";
     }
@@ -133,15 +138,16 @@ void AdminConsole::printClient(ClientId id) const {
     std::cout << "=== Клиент #" << rep->id << " ===\n";
     std::cout << "Статус:      " << to_string(rep->state) << '\n';
     std::cout << "Операция:    " << to_string(rep->requestedOperation);
-    if (rep->requestedOperation != OperationType::CheckBalance) std::cout << ' ' << formatMoney(rep->amount);
+    if (rep->requestedOperation != OperationType::CheckBalance)
+        std::cout << ' ' << formatMoney(rep->amount, currency_, false);
     std::cout << '\n';
     std::cout << "Терпение:    " << rep->patienceSeconds << " c\n";
-    std::cout << "Баланс:      " << formatMoney(rep->accountBalance) << ' ' << cfg_.atm.currency << '\n';
+    std::cout << "Баланс:      " << formatMoney(rep->accountBalance, currency_) << '\n';
     if (rep->history.empty()) {
         std::cout << "История операций: пусто\n";
     } else {
         std::cout << "История операций:\n";
-        for (const auto& r : rep->history) printRecord(r);
+        for (const auto& r : rep->history) printRecord(r, currency_);
     }
 }
 
@@ -151,7 +157,7 @@ void AdminConsole::printBalance(ClientId id) const {
         std::cout << "Клиент #" << id << " не найден.\n";
         return;
     }
-    std::cout << "Баланс клиента #" << id << ": " << formatMoney(*bal) << ' ' << cfg_.atm.currency << '\n';
+    std::cout << "Баланс клиента #" << id << ": " << formatMoney(*bal, currency_) << '\n';
 }
 
 void AdminConsole::printOperations(const Command& c) const {
@@ -165,14 +171,14 @@ void AdminConsole::printOperations(const Command& c) const {
         return;
     }
     std::cout << "Операции (" << ops.size() << "):\n";
-    for (const auto& r : ops) printRecord(r);
+    for (const auto& r : ops) printRecord(r, currency_);
 }
 
 void AdminConsole::printAtm() const {
     const AtmSnapshot s = engine_.snapshot();
     std::cout << "=== Банкомат ===\n";
     std::cout << "Состояние:  " << to_string(s.state) << '\n';
-    std::cout << "Касса:      " << formatMoney(s.cashboxBalance) << ' ' << cfg_.atm.currency
+    std::cout << "Касса:      " << formatMoney(s.cashboxBalance, currency_)
               << (s.lowCash ? "  [НИЗКАЯ КАССА]" : "") << '\n';
     std::cout << std::fixed << std::setprecision(0)
               << "Аптайм:     " << s.uptimeSeconds << " c модельного времени\n";
@@ -182,7 +188,8 @@ void AdminConsole::printAtm() const {
 void AdminConsole::printStats() const {
     const StatsSnapshot s = engine_.statsSnapshot();
     std::cout << "=== Статистика СМО ===\n";
-    std::cout << "Обслужено:            " << s.served << '\n';
+    std::cout << "Обслужено:            " << s.served << " / " << cfg_.clients.count
+              << " (всего клиентов за прогон)\n";
     std::cout << "Ушли (всего):         " << s.left
               << "  (из них по ТО: " << s.renegedByMaintenance << ")\n";
     std::cout << std::fixed << std::setprecision(1);
@@ -404,7 +411,7 @@ void AdminConsole::showQueueInteractive(LiveRenderer& renderer) {
                 const ClientSnapshot& c = q[static_cast<std::size_t>(idx)];
                 os << "  " << (idx + 1) << ". #" << c.id << ' ' << to_string(c.requestedOperation);
                 if (c.requestedOperation != OperationType::CheckBalance) {
-                    os << ' ' << formatMoney(c.amount);
+                    os << ' ' << formatMoney(c.amount, currency_, false);
                 }
                 os << "  ждёт " << static_cast<long>(c.waitedSeconds)
                    << " c, терпение " << static_cast<long>(c.remainingPatience) << " c"

@@ -22,7 +22,11 @@ enum class ServiceDistribution { Uniform, Normal, Exponential };
 struct AtmConfig {
     Money initialCash = 50'000'000;      // 500 000.00
     Money lowCashThreshold = 2'000'000;  //  20 000.00 — порог инкассации (§4.8)
-    std::string currency = "EUR";
+    std::string currency = "EUR";        // код валюты (EUR/USD/RUB/…)
+    // Переопределение формата валюты из конфига (atm.currency_format): символ и
+    // его позиция, разделитель разрядов, десятичный знак, число знаков. Пусто ->
+    // формат целиком из встроенной таблицы по коду currency (resolveCurrencyFormat).
+    CurrencyOverride currencyOverride;
 };
 
 // Веса вероятностей операций. Не обязаны в сумме давать 1 — нормализуются при

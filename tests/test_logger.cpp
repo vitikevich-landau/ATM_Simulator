@@ -30,6 +30,7 @@ TEST(logger_respects_min_level) {
     CHECK(all.find("WARN_MSG") != std::string::npos);
     CHECK(all.find("ERROR_MSG") != std::string::npos);
     CHECK(all.find("[INFO]") != std::string::npos);
+    CHECK(all.find("[WARN]") != std::string::npos);   // метка печати уровня Warn
     CHECK(all.find("[ERROR]") != std::string::npos);
 }
 
@@ -39,4 +40,15 @@ TEST(logger_parse_level) {
     CHECK(Logger::parseLevel("warn") == LogLevel::Warn);
     CHECK(Logger::parseLevel("error") == LogLevel::Error);
     CHECK(Logger::parseLevel("nonsense") == LogLevel::Info);  // безопасный дефолт
+}
+
+// tryParseLevel отличает неизвестный уровень (nullopt) от валидного и принимает
+// входной алиас "warning". Обе половины (разбор/печать) читают одну таблицу.
+TEST(logger_try_parse_level) {
+    CHECK(Logger::tryParseLevel("debug") == LogLevel::Debug);
+    CHECK(Logger::tryParseLevel("info") == LogLevel::Info);
+    CHECK(Logger::tryParseLevel("warn") == LogLevel::Warn);
+    CHECK(Logger::tryParseLevel("warning") == LogLevel::Warn);  // входной алиас
+    CHECK(Logger::tryParseLevel("error") == LogLevel::Error);
+    CHECK(!Logger::tryParseLevel("nonsense").has_value());       // неизвестное -> nullopt
 }
