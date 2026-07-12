@@ -1,5 +1,7 @@
 #include "atmsim/engine/ServiceStages.hpp"
 
+#include <cassert>
+
 namespace atmsim {
 
 // ---------------------------------------------------------------------------
@@ -92,7 +94,12 @@ std::string to_string(ServiceStage s) {
         case ServiceStage::PrintReceipt:    return "печатается чек";
         case ServiceStage::ReturnCard:      return "забирает карту";
     }
-    return "?";
+    // Недостижимо: switch покрывает все ServiceStage (-Wswitch следит за
+    // полнотой). Сюда можно попасть только с испорченным/невалидным значением
+    // enum — не молчим «?»: в debug/тестах падаем ассертом, в release отдаём
+    // заметную метку-заглушку (единый источник — kUnknownStageLabel).
+    assert(false && "неизвестный ServiceStage в to_string");
+    return kUnknownStageLabel;
 }
 
 }  // namespace atmsim

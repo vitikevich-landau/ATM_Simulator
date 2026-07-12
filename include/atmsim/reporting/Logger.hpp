@@ -8,6 +8,7 @@
 // ============================================================================
 #include <fstream>
 #include <mutex>
+#include <optional>
 #include <string>
 
 namespace atmsim {
@@ -29,9 +30,15 @@ public:
     void warn(const std::string& m)  { log(LogLevel::Warn, m); }
     void error(const std::string& m) { log(LogLevel::Error, m); }
 
-    /// Разбирает строку уровня из конфига ("debug"/"info"/"warn"/"error").
-    /// Неизвестное значение -> Info (безопасный дефолт).
+    /// Разбирает строку уровня из конфига ("debug"/"info"/"warn"/"warning"/
+    /// "error"). Неизвестное значение -> Info (безопасный дефолт; сохранён ради
+    /// совместимости API). Чтобы ОТЛИЧИТЬ неизвестное от валидного — tryParseLevel.
     static LogLevel parseLevel(const std::string& s);
+
+    /// Как parseLevel, но неизвестный уровень возвращает std::nullopt (а не молча
+    /// Info) — вызывающий может предупредить/отвергнуть. Разбор и печать уровней
+    /// читают ОДНУ таблицу (Logger.cpp), поэтому написание и метка не расходятся.
+    static std::optional<LogLevel> tryParseLevel(const std::string& s);
 
 private:
     std::ofstream out_;

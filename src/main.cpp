@@ -12,6 +12,7 @@
 #include <exception>
 #include <iomanip>
 #include <iostream>
+#include <optional>
 #include <string>
 
 #include "atmsim/Version.hpp"
@@ -111,7 +112,15 @@ int main(int argc, char** argv) {
         // не открылся (нет прав, битый путь), Logger молча глотает записи —
         // предупреждаем в stderr, но не падаем: лог вспомогательный, симуляции он
         // не мешает.
-        Logger logger(cfg.logging.file, Logger::parseLevel(cfg.logging.level));
+        // Уровень лога: неизвестное значение НЕ глотаем молча в Info — сначала
+        // явно предупреждаем в stderr (tryParseLevel отличает неизвестное от
+        // валидного), затем применяем безопасный дефолт.
+        const std::optional<LogLevel> parsedLevel = Logger::tryParseLevel(cfg.logging.level);
+        if (!parsedLevel) {
+            std::cerr << "Предупреждение: неизвестный уровень логирования '" << cfg.logging.level
+                      << "' — использую info (допустимо: debug | info | warn | error)\n";
+        }
+        Logger logger(cfg.logging.file, parsedLevel.value_or(LogLevel::Info));
         if (!logger.ok()) {
             std::cerr << "Предупреждение: не удалось открыть файл лога '"
                       << cfg.logging.file << "' — техническое логирование отключено\n";

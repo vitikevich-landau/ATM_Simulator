@@ -8,6 +8,7 @@
 #include <optional>
 #include <sstream>
 
+#include "atmsim/Version.hpp"
 #include "atmsim/console/Terminal.hpp"
 #include "atmsim/console/scene/SceneCanvas.hpp"
 #include "atmsim/console/scene/SceneComposer.hpp"
@@ -180,7 +181,9 @@ std::vector<std::string> LiveRenderer::composeHeaderLines(const AtmSnapshot& s) 
     {
         std::ostringstream os;
         // В шапке — фактическая частота КАДРОВ (со сценой она выше refresh_hz).
-        os << C(ansi::bold()) << "ATM Simulator" << R()
+        // Имя проекта берём из Version.hpp (единый источник), а не хардкодим:
+        // иначе переименование проекта разъехалось бы с main/splash (там kProjectName).
+        os << C(ansi::bold()) << kProjectName << R()
            << "   uptime " << hms(s.uptimeSeconds) << "   [LIVE " << frameRate() << " fps]";
         L.push_back(fit(os.str(), width_));
     }
