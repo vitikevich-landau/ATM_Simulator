@@ -372,7 +372,12 @@ std::vector<std::string> LiveRenderer::composeTableLines(
     std::vector<std::string> right;
     right.push_back(C(ansi::bold()) + "СТАТИСТИКА" + R());
     {
-        std::ostringstream os; os << " Обслужено:   " << st.served; right.push_back(os.str());
+        // Показываем и ОБЩИЙ план прогона (cfg.clients.count) — «сколько всего
+        // клиентов будет». Иначе во время прогона это число видно только на
+        // стартовом баннере, который уже прокручен альтернативным буфером live-
+        // режима, и наблюдатель не понимает, близко ли конец.
+        std::ostringstream os; os << " Обслужено:   " << st.served << " / " << cfg_.clients.count;
+        right.push_back(os.str());
     }
     {
         std::ostringstream os; os << " Ушли:        " << st.left << "  (ТО: " << st.renegedByMaintenance << ")";

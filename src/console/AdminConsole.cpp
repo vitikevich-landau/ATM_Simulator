@@ -64,7 +64,7 @@ void AdminConsole::printHelp() const {
         "  scene [on|off]                    — анимированная сцена над таблицей (нужен\n"
         "                                      терминал от ~84x30; без аргумента — переключить)\n"
         "  export <file>                     — выгрузить журнал операций в CSV\n"
-        "  restart                           — новый прогон с нуля\n"
+        "  restart                           — новый прогон (перечитывает конфиг с диска)\n"
         "  stop                              — плавно остановить и выйти\n";
 }
 
@@ -98,7 +98,8 @@ void AdminConsole::printStatus() const {
     }
     std::cout << "В очереди:         " << s.queueLength
               << "  (макс. за прогон " << s.maxQueueLength << ")\n";
-    std::cout << "Обслужено:         " << s.totalServed << '\n';
+    std::cout << "Обслужено:         " << s.totalServed << " / " << cfg_.clients.count
+              << " (всего за прогон)\n";
     std::cout << "Ушли (всего):      " << s.totalLeft << '\n';
     std::cout << "Касса:             " << formatMoney(s.cashboxBalance, currency_)
               << (s.lowCash ? "  [НИЗКАЯ КАССА]" : "") << '\n';
@@ -187,7 +188,8 @@ void AdminConsole::printAtm() const {
 void AdminConsole::printStats() const {
     const StatsSnapshot s = engine_.statsSnapshot();
     std::cout << "=== Статистика СМО ===\n";
-    std::cout << "Обслужено:            " << s.served << '\n';
+    std::cout << "Обслужено:            " << s.served << " / " << cfg_.clients.count
+              << " (всего клиентов за прогон)\n";
     std::cout << "Ушли (всего):         " << s.left
               << "  (из них по ТО: " << s.renegedByMaintenance << ")\n";
     std::cout << std::fixed << std::setprecision(1);

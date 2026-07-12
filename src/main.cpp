@@ -58,7 +58,8 @@ void printRestartDivider(int runIndex, const StatsSnapshot& st) {
 void printFinalReport(const StatsSnapshot& st, const AtmSnapshot& s, const Config& cfg) {
     std::cout << std::fixed << std::setprecision(1);
     std::cout << "\n=== Итоговая статистика ===\n";
-    std::cout << "Обслужено:            " << st.served << '\n';
+    std::cout << "Обслужено:            " << st.served << " / " << cfg.clients.count
+              << " (всего клиентов)\n";
     std::cout << "Ушли (всего):         " << st.left
               << "  (из них по ТО: " << st.renegedByMaintenance << ")\n";
     std::cout << "Среднее ожидание:     " << st.avgWaitSeconds << " c\n";
@@ -130,28 +131,45 @@ int main(int argc, char** argv) {
         printStartupBanner(cfg, path, logger.ok());
         installSignalHandlers();  // SIGINT/SIGTERM -> плавная остановка (§4.6)
 
-        // Цикл прогонов: команда restart пересоздаёт движок «с нуля» с новым seed
-        // (тот же seed дал бы идентичный прогон, §5). Выходим на Quit.
-        // ui-настройки, изменённые командами на лету (scene on|off), переносим
-        // из прогона в прогон — restart не должен молча откатывать их к файлу.
-        auto seed = cfg.simulation.randomSeed;
-        UiConfig uiState = cfg.ui;
-        for (int runIndex = 1; ; ++runIndex, ++seed) {
-            Config runCfg = cfg;
-            runCfg.simulation.randomSeed = seed;
+        // Цикл прогонов. Команда restart НЕ дожидается конца прогона: она
+        // прерывает его, пересоздаёт движок и запускает заново, ПЕРЕЧИТАВ конфиг с
+        // диска — правки файла (валюта, число клиентов, тайминги) применяются без
+        // перезапуска программы. Выходим на Quit.
+        Config baseCfg = cfg;            // «текущий» конфиг: обновляется при reload
+        UiConfig uiState = baseCfg.ui;   // ui-переключения на лету (scene on|off)
+        for (int runIndex = 1; ; ++runIndex) {
+            Config runCfg = baseCfg;
             runCfg.ui = uiState;
 
             const RunResult r = runSingleSimulation(runCfg, logger);
-            uiState = r.ui;
+            uiState = r.ui;  // если reload не случится/не удастся — переносим runtime-ui дальше
             logger.info("Итог прогона #" + std::to_string(runIndex) + ": обслужено " +
                         std::to_string(r.stats.served) + ", ушли " + std::to_string(r.stats.left));
 
-            if (r.outcome == AdminConsole::RunOutcome::Restart) {
-                printRestartDivider(runIndex, r.stats);
-                continue;
+            if (r.outcome != AdminConsole::RunOutcome::Restart) {
+                printFinalReport(r.stats, r.atm, baseCfg);
+                break;
             }
-            printFinalReport(r.stats, r.atm, cfg);
-            break;
+
+            printRestartDivider(runIndex, r.stats);
+            // Перечитываем конфиг с диска перед следующим прогоном. Успех: файл —
+            // источник истины, в т.ч. для ui (scene и пр.); применяется и тот же
+            // random_seed из файла — при неизменном seed прогон воспроизводится
+            // точно (§5), поменяйте random_seed для нового случайного сценария.
+            // Ошибку чтения (файл удалён/битый JSON) НЕ роняем: предупреждаем и
+            // продолжаем с прежним конфигом.
+            try {
+                baseCfg = ConfigLoader::loadFromFile(path);
+                uiState = baseCfg.ui;
+                logger.info("Конфиг перечитан с диска перед прогоном #" +
+                            std::to_string(runIndex + 1));
+                std::cout << "Конфиг перечитан: " << path << "  |  клиентов: "
+                          << baseCfg.clients.count << "  |  валюта: " << baseCfg.atm.currency << '\n';
+            } catch (const ConfigError& e) {
+                logger.warn(std::string("Перечитать конфиг при restart не удалось: ") + e.what());
+                std::cerr << "Предупреждение: не удалось перечитать конфиг '" << path << "': "
+                          << e.what() << "\n  -> продолжаю с прежними настройками\n";
+            }
         }
     } catch (const ConfigError& e) {
         std::cerr << "Ошибка конфигурации: " << e.what() << '\n';

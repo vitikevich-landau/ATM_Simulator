@@ -29,6 +29,8 @@ TEST(renderer_frame_has_labels_and_fixed_height) {
     CHECK(all.find("Состояние") != std::string::npos);
     CHECK(all.find("Очередь") != std::string::npos);
     CHECK(all.find("Обслужено") != std::string::npos);
+    // Дашборд показывает ОБЩИЙ план прогона: свежий движок -> "Обслужено 0 / 5".
+    CHECK(all.find("0 / 5") != std::string::npos);
 }
 
 // Высота кадра НЕ должна зависеть от длины очереди: дашборд рисует фиксированный
