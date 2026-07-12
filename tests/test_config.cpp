@@ -52,6 +52,26 @@ TEST(config_reads_currency_format_override) {
     CHECK_EQ(formatMoney(123'456, f), std::string("1 234,560 $"));  // группа " ", десятичная ",", 3 знака
 }
 
+// symbol_position принимает только "before"/"after": опечатка не должна молча
+// становиться "after" и менять весь вывод сумм (как прочие enum-поля конфига).
+TEST(config_rejects_bad_symbol_position) {
+    bool threw = false;
+    try {
+        ConfigLoader::loadFromString(
+            R"({"atm": {"currency_format": {"symbol_position": "sideways"}}})");
+    } catch (const ConfigError&) {
+        threw = true;
+    }
+    CHECK(threw);
+    // Валидные значения проходят.
+    const Config before = ConfigLoader::loadFromString(
+        R"({"atm": {"currency_format": {"symbol_position": "before"}}})");
+    CHECK(*before.atm.currencyOverride.symbolBefore == true);
+    const Config after = ConfigLoader::loadFromString(
+        R"({"atm": {"currency_format": {"symbol_position": "after"}}})");
+    CHECK(*after.atm.currencyOverride.symbolBefore == false);
+}
+
 // decimals вне 0..6 -> ConfigError (иначе строка денег раздулась бы нулями).
 TEST(config_rejects_bad_currency_decimals) {
     bool threw = false;

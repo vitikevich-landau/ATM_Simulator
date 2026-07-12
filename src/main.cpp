@@ -161,6 +161,20 @@ int main(int argc, char** argv) {
             try {
                 baseCfg = ConfigLoader::loadFromFile(path);
                 uiState = baseCfg.ui;
+                // Применяем и настройки лога из перечитанного конфига: без этого
+                // изменённые logging.file/level игнорировались бы, а прогон уже шёл
+                // бы по новому конфигу — технический лог рассинхронился бы с ним.
+                // reconfigure дописывает (append), логи прошлых прогонов не теряем.
+                const std::optional<LogLevel> lvl = Logger::tryParseLevel(baseCfg.logging.level);
+                if (!lvl) {
+                    std::cerr << "Предупреждение: неизвестный уровень логирования '"
+                              << baseCfg.logging.level << "' — использую info\n";
+                }
+                logger.reconfigure(baseCfg.logging.file, lvl.value_or(LogLevel::Info));
+                if (!logger.ok()) {
+                    std::cerr << "Предупреждение: не удалось открыть файл лога '"
+                              << baseCfg.logging.file << "' после перечитывания — лог отключён\n";
+                }
                 logger.info("Конфиг перечитан с диска перед прогоном #" +
                             std::to_string(runIndex + 1));
                 std::cout << "Конфиг перечитан: " << path << "  |  клиентов: "

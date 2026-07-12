@@ -62,6 +62,16 @@ std::string timestamp() {
 Logger::Logger(const std::string& file, LogLevel minLevel)
     : out_(file, std::ios::binary | std::ios::trunc), min_(minLevel) {}
 
+void Logger::reconfigure(const std::string& file, LogLevel minLevel) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    min_ = minLevel;
+    out_.close();
+    out_.clear();  // сброс флагов ошибки, иначе повторный open может не сработать
+    // append (а не trunc): при restart в тот же файл логи прошлых прогонов сессии
+    // сохраняются; при смене logging.file — открываем/дописываем новый файл.
+    out_.open(file, std::ios::binary | std::ios::app);
+}
+
 void Logger::log(LogLevel level, const std::string& message) {
     // Отсекаем всё ниже минимального уровня (Debug < Info < Warn < Error).
     if (static_cast<int>(level) < static_cast<int>(min_)) return;

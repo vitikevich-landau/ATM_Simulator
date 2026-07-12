@@ -30,6 +30,13 @@ public:
     void warn(const std::string& m)  { log(LogLevel::Warn, m); }
     void error(const std::string& m) { log(LogLevel::Error, m); }
 
+    /// Переоткрыть лог под НОВЫЙ файл/уровень — для restart с перечитанным
+    /// конфигом (logging.file / logging.level могли измениться). В отличие от
+    /// конструктора (trunc — свежий лог на запуск процесса), дописывает (append):
+    /// логи прошлых прогонов той же сессии не теряются. Потокобезопасно; вызывать
+    /// между прогонами, когда потоки движка уже остановлены.
+    void reconfigure(const std::string& file, LogLevel minLevel);
+
     /// Разбирает строку уровня из конфига ("debug"/"info"/"warn"/"warning"/
     /// "error"). Неизвестное значение -> Info (безопасный дефолт; сохранён ради
     /// совместимости API). Чтобы ОТЛИЧИТЬ неизвестное от валидного — tryParseLevel.

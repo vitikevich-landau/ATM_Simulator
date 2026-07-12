@@ -186,8 +186,18 @@ Config ConfigLoader::loadFromString(const std::string& jsonText) {
                 CurrencyOverride ov;
                 if (cf.contains("symbol"))
                     ov.symbol = cf.at("symbol").get<std::string>();
-                if (cf.contains("symbol_position"))
-                    ov.symbolBefore = (cf.at("symbol_position").get<std::string>() == "before");
+                if (cf.contains("symbol_position")) {
+                    // Как и прочие строковые enum-поля конфига (arrival_mode,
+                    // distribution), неизвестное написание не глотаем молча (иначе
+                    // опечатка «befor» тихо дала бы "after" и изменила весь вывод
+                    // сумм), а отвергаем с понятной ошибкой.
+                    const std::string pos = cf.at("symbol_position").get<std::string>();
+                    if (pos != "before" && pos != "after") {
+                        throw ConfigError("atm.currency_format.symbol_position должен быть "
+                                          "\"before\" или \"after\" (получено: '" + pos + "')");
+                    }
+                    ov.symbolBefore = (pos == "before");
+                }
                 if (cf.contains("space_between"))
                     ov.spaceBetween = cf.at("space_between").get<bool>();
                 if (cf.contains("group_separator"))
