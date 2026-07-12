@@ -436,12 +436,10 @@ std::vector<std::string> LiveRenderer::composeTableLines(
                         "  —  restart: новый прогон · stop: выход" + R(), width_));
     } else {
         // Подвал держим <= ~95 колонок, чтобы на ходовой ширине 100 хвост с
-        // «restart · live off · stop» не обрезался; полный список команд — в help.
-        // stats в подсказке не дублируем — блок статистики и так всегда на дашборде,
-        // зато освободили место для restart (перезапуск с перечитыванием конфига).
+        // «live off · stop» не обрезался; полный список команд — в help.
         L.push_back(fit(C(ansi::grey()) +
-                        "команды: pause · resume · maintenance N|stop · queue · "
-                        "scene · restart · live off · stop · help" + R(), width_));
+                        "команды: pause · resume · maintenance N|stop · queue · stats · "
+                        "scene · live off · stop · help" + R(), width_));
     }
 
     return L;
