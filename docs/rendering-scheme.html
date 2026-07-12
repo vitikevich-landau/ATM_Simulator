@@ -1,0 +1,626 @@
+<!DOCTYPE html>
+<html lang="ru" data-theme="dark">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>ATM Simulator — как работает рендеринг (интерактивная схема)</title>
+<style>
+  :root{
+    --bg:#0e1116; --bg2:#151a21; --bg3:#1c232d; --panel:#131820; --border:#273140;
+    --fg:#d7dee8; --fg2:#9aa7b6; --fg3:#6b7888;
+    --accent:#4aa3ff; --green:#3ecf8e; --red:#ff5f6d; --yellow:#ffcf5c; --blue:#5b9dff;
+    --cyan:#38d6d6; --purple:#b58cff; --grey:#7f8c9b; --orange:#ff9d5c;
+    --mono:'Cascadia Code','JetBrains Mono',Consolas,'SF Mono',Menlo,monospace;
+    --sans:'Segoe UI',system-ui,-apple-system,Roboto,Arial,sans-serif;
+    --shadow:0 6px 24px rgba(0,0,0,.35);
+    --engine:#b58cff; --render:#3ecf8e; --console:#ffcf5c;
+  }
+  :root[data-theme="light"]{
+    --bg:#f5f7fa; --bg2:#ffffff; --bg3:#eef2f7; --panel:#ffffff; --border:#d6deea;
+    --fg:#1b2430; --fg2:#4a5666; --fg3:#7a8798;
+    --shadow:0 6px 20px rgba(30,50,80,.10);
+    --engine:#7d4fd6; --render:#1a9e63; --console:#c9992a;
+  }
+  *{box-sizing:border-box}
+  html,body{margin:0;padding:0}
+  body{background:var(--bg);color:var(--fg);font-family:var(--sans);font-size:15px;line-height:1.55}
+  code{font-family:var(--mono);font-size:.86em;background:var(--bg3);padding:1px 5px;border-radius:5px}
+  .ref{font-family:var(--mono);font-size:.8em;color:var(--cyan);background:rgba(56,214,214,.08);padding:2px 7px;border-radius:5px;white-space:nowrap;border:1px solid rgba(56,214,214,.16);display:inline-block;margin:2px 4px 2px 0}
+  .layout{display:flex;min-height:100vh}
+  .side{width:260px;flex:0 0 260px;background:var(--bg2);border-right:1px solid var(--border);position:sticky;top:0;height:100vh;overflow-y:auto;padding:18px 0}
+  .brand{padding:0 20px 14px;border-bottom:1px solid var(--border);margin-bottom:10px}
+  .brand h1{font-size:15px;margin:0 0 3px;letter-spacing:.2px}
+  .brand p{margin:0;font-size:12px;color:var(--fg3)}
+  .nav a{display:flex;align-items:center;gap:10px;padding:9px 20px;color:var(--fg2);font-size:14px;cursor:pointer;border-left:3px solid transparent}
+  .nav a:hover{background:var(--bg3);color:var(--fg)}
+  .nav a.active{color:var(--fg);border-left-color:var(--accent);background:linear-gradient(90deg,rgba(74,163,255,.12),transparent)}
+  .nav .num{width:20px;color:var(--fg3);font-family:var(--mono);font-size:12px;text-align:right}
+  .theme{margin:14px 20px 0;padding-top:12px;border-top:1px solid var(--border)}
+  .theme button{width:100%;background:var(--bg3);color:var(--fg2);border:1px solid var(--border);border-radius:8px;padding:7px;cursor:pointer;font-size:13px}
+  .theme button:hover{color:var(--fg)}
+  .main{flex:1;min-width:0;padding:34px 44px 120px;max-width:1120px}
+  section{display:none;animation:fade .25s ease}
+  section.on{display:block}
+  @keyframes fade{from{opacity:0;transform:translateY(6px)}to{opacity:1;transform:none}}
+  h2.title{font-size:26px;margin:0 0 4px;letter-spacing:.2px}
+  .sub{color:var(--fg2);margin:0 0 24px;font-size:15px;max-width:80ch}
+  h3{font-size:18px;margin:32px 0 12px;padding-bottom:6px;border-bottom:1px solid var(--border)}
+  h4{font-size:15px;margin:18px 0 8px}
+  p{max-width:82ch}
+  .lead{color:var(--fg2)}
+  .grid{display:grid;gap:14px}
+  .g2{grid-template-columns:1fr 1fr}
+  .g3{grid-template-columns:repeat(3,1fr)}
+  @media(max-width:960px){.g2,.g3{grid-template-columns:1fr}}
+  .card{background:var(--panel);border:1px solid var(--border);border-radius:12px;padding:16px 18px}
+  .card h4{margin-top:0}
+  .muted{color:var(--fg2)}
+  ul.tight{margin:8px 0;padding-left:20px}
+  ul.tight li{margin:5px 0}
+  .callout{border-radius:10px;padding:13px 16px;margin:16px 0;border:1px solid;font-size:14px;max-width:82ch}
+  .callout.info{background:rgba(74,163,255,.07);border-color:rgba(74,163,255,.3)}
+  .callout.good{background:rgba(62,207,142,.07);border-color:rgba(62,207,142,.3)}
+  .callout.warn{background:rgba(255,157,92,.08);border-color:rgba(255,157,92,.32)}
+  .legend{display:flex;flex-wrap:wrap;gap:16px;margin:10px 0 18px;font-size:13px;color:var(--fg2)}
+  .legend span{display:inline-flex;align-items:center;gap:7px}
+  .sw{width:13px;height:13px;border-radius:3px;display:inline-block}
+  .hint{font-size:13px;color:var(--fg3);margin:4px 2px 16px;display:flex;align-items:center;gap:7px}
+  .hint::before{content:"☞";color:var(--accent)}
+
+  /* ---- Pipeline ---- */
+  .pipe-wrap{display:grid;grid-template-columns:340px 1fr;gap:22px;align-items:start}
+  @media(max-width:960px){.pipe-wrap{grid-template-columns:1fr}}
+  .pipe{display:flex;flex-direction:column;gap:0}
+  .pnode{position:relative;background:var(--panel);border:1px solid var(--border);border-left:4px solid var(--grey);border-radius:10px;padding:11px 14px;cursor:pointer;transition:.15s}
+  .pnode:hover{border-color:var(--accent);transform:translateX(2px)}
+  .pnode.sel{border-color:var(--accent);box-shadow:0 0 0 2px rgba(74,163,255,.25)}
+  .pnode.eng{border-left-color:var(--engine)}
+  .pnode.ren{border-left-color:var(--render)}
+  .pnode .pt{font-weight:600;font-size:14px}
+  .pnode .ps{font-family:var(--mono);font-size:11.5px;color:var(--fg2);margin-top:2px}
+  .pconn{height:16px;width:2px;background:var(--border);margin:0 auto}
+  .plane-tag{font-size:10px;text-transform:uppercase;letter-spacing:.5px;font-weight:700;float:right;padding:1px 7px;border-radius:20px}
+  .plane-tag.eng{color:var(--engine);background:rgba(181,140,255,.12)}
+  .plane-tag.ren{color:var(--render);background:rgba(62,207,142,.12)}
+  .detail{position:sticky;top:20px;background:var(--panel);border:1px solid var(--border);border-left:4px solid var(--accent);border-radius:12px;padding:18px 20px;min-height:320px}
+  .detail h4{margin:0 0 3px;font-size:17px}
+  .detail .role{color:var(--fg2);margin:0 0 6px;font-size:13.5px}
+  .detail .k{color:var(--fg3);font-weight:700;text-transform:uppercase;font-size:10.5px;letter-spacing:.6px;display:block;margin:16px 0 6px}
+  .detail .what{font-size:14px;color:var(--fg)}
+  .chip{display:inline-block;font-family:var(--mono);font-size:12px;background:var(--bg3);border:1px solid var(--border);border-radius:6px;padding:3px 8px;margin:3px 5px 3px 0}
+
+  /* ---- Canvas demos ---- */
+  .demo{background:var(--bg2);border:1px solid var(--border);border-radius:14px;padding:16px 18px;box-shadow:var(--shadow)}
+  canvas{display:block;width:100%;background:var(--bg);border-radius:10px;border:1px solid var(--border)}
+  .controls{display:flex;flex-wrap:wrap;gap:12px;align-items:center;margin-top:12px}
+  .btn{background:var(--bg3);color:var(--fg);border:1px solid var(--border);border-radius:8px;padding:7px 14px;cursor:pointer;font-size:13px;font-family:var(--sans)}
+  .btn:hover{border-color:var(--accent)}
+  .btn.on{background:var(--accent);color:#04121f;border-color:var(--accent);font-weight:600}
+  .sl{display:flex;flex-direction:column;gap:2px;font-size:12px;color:var(--fg2);min-width:150px}
+  .sl b{color:var(--accent);font-family:var(--mono)}
+  input[type=range]{accent-color:var(--accent)}
+  .hud{display:flex;flex-wrap:wrap;gap:8px 18px;margin-top:12px;font-family:var(--mono);font-size:12.5px;color:var(--fg2)}
+  .hud b{color:var(--cyan)}
+  label.ck{display:inline-flex;align-items:center;gap:6px;font-size:13px;color:var(--fg2);cursor:pointer}
+
+  /* ---- Threads ---- */
+  .lanes{display:grid;grid-template-columns:repeat(4,1fr);gap:12px;margin-top:4px}
+  @media(max-width:960px){.lanes{grid-template-columns:1fr 1fr}}
+  .lane{background:var(--panel);border:1px solid var(--border);border-radius:12px;padding:14px;border-top:3px solid var(--grey)}
+  .lane.t-eng{border-top-color:var(--engine)}
+  .lane.t-ren{border-top-color:var(--render)}
+  .lane.t-con{border-top-color:var(--console)}
+  .lane h4{margin:0 0 3px;font-size:14px}
+  .lane .who{font-size:11.5px;color:var(--fg3);margin-bottom:10px}
+  .lane .m{font-family:var(--mono);font-size:11.5px;background:var(--bg3);border:1px solid var(--border);border-radius:6px;padding:5px 8px;margin:5px 0}
+  .lane .role{font-size:11px;color:var(--fg2);margin-top:6px}
+  .seq{counter-reset:s;margin:16px 0 0;padding:0;list-style:none;max-width:82ch}
+  .seq li{counter-increment:s;position:relative;padding:9px 12px 9px 44px;background:var(--panel);border:1px solid var(--border);border-radius:9px;margin:7px 0;font-size:13.5px}
+  .seq li::before{content:counter(s);position:absolute;left:12px;top:9px;width:22px;height:22px;background:var(--accent);color:#04121f;border-radius:50%;font-weight:700;font-size:12px;display:flex;align-items:center;justify-content:center}
+  .seq code{font-size:.92em}
+
+  /* ---- Data structures ---- */
+  .ds{background:var(--panel);border:1px solid var(--border);border-radius:12px;padding:0;overflow:hidden}
+  .ds h4{margin:0;padding:12px 16px;background:var(--bg3);font-family:var(--mono);font-size:13.5px;border-bottom:1px solid var(--border);display:flex;justify-content:space-between;align-items:center}
+  .ds h4 .tg{font-family:var(--sans);font-size:10px;font-weight:700;text-transform:uppercase;letter-spacing:.5px;padding:2px 8px;border-radius:20px}
+  .ds .fields{padding:8px 16px 12px}
+  .ds .f{display:flex;gap:10px;padding:5px 0;border-bottom:1px dashed var(--border);font-size:13px}
+  .ds .f:last-child{border-bottom:0}
+  .ds .fn{font-family:var(--mono);color:var(--cyan);flex:0 0 42%;font-size:12px}
+  .ds .fd{color:var(--fg2);font-size:12.5px}
+</style>
+</head>
+<body>
+<div class="layout">
+  <aside class="side">
+    <div class="brand">
+      <h1>Рендеринг ATM Simulator</h1>
+      <p>интерактивная схема · как рисуется кадр</p>
+    </div>
+    <nav class="nav" id="nav">
+      <a data-s="s0" class="active"><span class="num">00</span> Обзор и как читать</a>
+      <a data-s="s1"><span class="num">01</span> Конвейер кадра</a>
+      <a data-s="s2"><span class="num">02</span> Два ритма: 4 Гц ↔ 15 fps</a>
+      <a data-s="s3"><span class="num">03</span> Анимация движения</a>
+      <a data-s="s4"><span class="num">04</span> Потоки и связь с main()</a>
+      <a data-s="s5"><span class="num">05</span> Структуры данных</a>
+    </nav>
+    <div class="theme"><button id="themeBtn">◐ Светлая / тёмная тема</button></div>
+  </aside>
+
+  <main class="main">
+
+  <!-- ============ 0. ОБЗОР ============ -->
+  <section id="s0" class="on">
+    <h2 class="title">Как работает рендеринг</h2>
+    <p class="sub">Движок живёт сам по себе в своих потоках. Рендер — отдельный поток-«фотограф»: он берёт копию‑снимок состояния, рисует по нему кадр и отправляет в терминал только то, что изменилось. Эта схема кликабельна — тыкай узлы и демо, потом лезь в код по ссылкам вида <span class="ref">файл:строка</span>.</p>
+
+    <div class="callout info">
+      <b>Одно правило, которое всё объясняет:</b> рендер <b>только читает</b> копии-снимки и никогда не трогает движок. Поэтому он не может создать гонку или сломать симуляцию — у него физически нет доступа к «живым» данным.
+    </div>
+
+    <h3>Три действующих лица (цвет = поток)</h3>
+    <div class="legend">
+      <span><i class="sw" style="background:var(--engine)"></i> <b>Потоки движка</b> — пишут состояние (обслуживание + приход клиентов)</span>
+      <span><i class="sw" style="background:var(--render)"></i> <b>Render-поток</b> — читает снимки, рисует кадры</span>
+      <span><i class="sw" style="background:var(--console)"></i> <b>Консольный / main-поток</b> — команды, запуск, выход</span>
+    </div>
+
+    <div class="grid g3">
+      <div class="card"><h4 style="color:var(--engine)">Движок пишет</h4><p class="muted" style="font-size:13.5px;margin:0">Поток обслуживания меняет счета, кассу, журнал под одним мьютексом. Поток прихода добавляет клиентов в очередь. Прогресс операции нигде не хранится — вычисляется в момент снимка.</p></div>
+      <div class="card"><h4 style="color:var(--render)">Рендер читает и рисует</h4><p class="muted" style="font-size:13.5px;margin:0">Снимает копии 4×/сек, рисует кадры 15×/сек. Собирает сцену из клеток-символов, анимирует человечков твинами, шлёт в терминал построчный дифф.</p></div>
+      <div class="card"><h4 style="color:var(--console)">Консоль управляет</h4><p class="muted" style="font-size:13.5px;margin:0"><code>main()</code> поднимает потоки и отдаёт управление <code>AdminConsole</code>. Она создаёт <code>LiveRenderer</code>, ловит команды и сигналы, делит терминал с рендером через общий мьютекс.</p></div>
+    </div>
+
+    <h3>Как связаны разделы</h3>
+    <ul class="tight muted">
+      <li><b>Конвейер кадра</b> — восемь шагов «от движка до байтов в терминале», каждый с методами и структурами.</li>
+      <li><b>Два ритма</b> — почему снимки берутся редко (4 Гц), а кадры рисуются часто (15 fps), и что между ними происходит.</li>
+      <li><b>Анимация движения</b> — живое демо твина: как человечек физически едет по экрану и перебирает ногами.</li>
+      <li><b>Потоки и main()</b> — кто в каком потоке живёт и в каком порядке всё запускается.</li>
+      <li><b>Структуры данных</b> — что лежит в снимках, в клетках холста, в твине и актёре.</li>
+    </ul>
+  </section>
+
+  <!-- ============ 1. КОНВЕЙЕР ============ -->
+  <section id="s1">
+    <h2 class="title">Конвейер кадра</h2>
+    <p class="sub">Путь одного кадра: данные текут сверху вниз. Фиолетовые узлы — в потоках движка, зелёные — в render-потоке. Кликни узел — справа появятся методы, структуры и ссылки на код.</p>
+    <div class="hint">Кликай узлы. Нижние 6 узлов крутятся в цикле <code>renderLoop()</code> 15 раз в секунду.</div>
+
+    <div class="pipe-wrap">
+      <div class="pipe" id="pipe"></div>
+      <div class="detail" id="pdetail"></div>
+    </div>
+  </section>
+
+  <!-- ============ 2. ДВА РИТМА ============ -->
+  <section id="s2">
+    <h2 class="title">Два ритма: 4 Гц ↔ 15 fps</h2>
+    <p class="sub">Снимки движка берутся редко (дорого дёргать мьютекс), а кадры рисуются часто (нужна плавность). Между двумя снимками рисуется ~4 кадра из одного и того же кэша — двигаются в них только человечки, которых считает сам рендер.</p>
+
+    <div class="demo">
+      <canvas id="cvTiming" height="220"></canvas>
+      <div class="controls">
+        <button class="btn on" id="timPlay">⏸ Пауза</button>
+        <div class="sl">Скорость демо: <b id="timSpeedV">1.0×</b>
+          <input type="range" id="timSpeed" min="0.2" max="2" step="0.1" value="1"></div>
+        <label class="ck"><input type="checkbox" id="timSnap" checked> опросы движка (4 Гц)</label>
+        <label class="ck"><input type="checkbox" id="timFrame" checked> кадры (15 fps)</label>
+      </div>
+      <div class="hud">
+        <span>опросов движки: <b id="timNS">0</b></span>
+        <span>кадров: <b id="timNF">0</b></span>
+        <span>кадров на 1 снимок: <b>≈ 3.75</b></span>
+      </div>
+    </div>
+
+    <div class="grid g2" style="margin-top:16px">
+      <div class="card">
+        <h4>Снимок — 4 раза/сек <span class="ref">config/default_config.json:147 (refresh_hz)</span></h4>
+        <p class="muted" style="font-size:13.5px">Раз в ¼ секунды <code>renderLoop()</code> делает <b>один</b> согласованный снимок <code>engine_.fullSnapshot(f)</code> под одним локом и раскладывает <code>full.atm</code>/<code>stats</code>/<code>queue</code>/<code>ops</code> по кэшу <code>cachedSnap_</code> и т.д. Чаще незачем — данные не меняются так быстро.</p>
+      </div>
+      <div class="card">
+        <h4>Кадр — 15 раз/сек <span class="ref">config/default_config.json (scene_fps)</span></h4>
+        <p class="muted" style="font-size:13.5px"><code>frameRate() = max(scene_fps, refresh_hz)</code>. Между опросами кадр собирается <b>из кэша</b>: <code>presenter.tick()</code> двигает твины, <code>composeLinesFrom()</code> рисует. Сон «по дедлайну», опоздал больше кадра — drop-frame. <span class="ref">src/console/LiveRenderer.cpp:476 renderLoop()</span></p>
+      </div>
+    </div>
+    <div class="callout warn">На Windows при активной сцене включается <code>timeBeginPeriod(1)</code> — иначе системный таймер с точностью ~15.6 мс промахивался бы мимо дедлайнов 15 fps. <span class="ref">src/console/Terminal.cpp:39 TimerResolutionGuard</span></div>
+  </section>
+
+  <!-- ============ 3. АНИМАЦИЯ ============ -->
+  <section id="s3">
+    <h2 class="title">Анимация движения</h2>
+    <p class="sub">Позиция человечка — это не «двигай на N за кадр», а <b>твин</b>: «иди из A в B, начал тогда-то, дойдёшь за столько-то». Любой кадр между началом и концом получает точную дробную координату. Кликни по сцене — задай цель, и смотри, как строится новый твин из текущей точки.</p>
+    <div class="hint">Кликни по полосе сцены, чтобы отправить человечка к новой точке. Крути «личный темп» — увидишь, как меняется скорость.</div>
+
+    <div class="demo">
+      <canvas id="cvTween" height="150"></canvas>
+      <div class="controls">
+        <button class="btn on" id="twPlay">⏸ Пауза</button>
+        <label class="ck"><input type="checkbox" id="twAuto" checked> авто-хождение (туда-сюда)</label>
+        <div class="sl">Личный темп ходьбы <b id="twPaceV">1.00×</b> <span style="color:var(--fg3)">(в коде 0.75…1.35)</span>
+          <input type="range" id="twPace" min="0.75" max="1.35" step="0.01" value="1.0"></div>
+      </div>
+      <div class="hud">
+        <span>из → в: <b id="twFromTo">—</b></span>
+        <span>u (доля пути): <b id="twU">0.00</b></span>
+        <span>smoothstep(u): <b id="twS">0.00</b></span>
+        <span>x: <b id="twX">0.0</b></span>
+        <span>состояние: <b id="twState">стоит</b></span>
+        <span>кадр ног: <b id="twLeg">—</b></span>
+      </div>
+    </div>
+
+    <div class="grid g2" style="margin-top:16px">
+      <div class="card">
+        <h4>Формула позиции <span class="ref">src/console/scene/ScenePresenter.cpp:69 posAt()</span></h4>
+        <p class="muted" style="font-size:13px;margin:0 0 8px">Не прямая линия, а сглаживание — мягкий разгон и торможение:</p>
+        <div class="m" style="font-family:var(--mono);font-size:13px;background:var(--bg3);border:1px solid var(--border);border-radius:8px;padding:10px 12px;color:var(--fg)">
+          u = (сейчас − старт) / длительность<br>
+          <span style="color:var(--cyan)">smoothstep(u) = u·u·(3 − 2u)</span><br>
+          x = from + (to − from) · smoothstep(u)
+        </div>
+        <p class="muted" style="font-size:12.5px;margin-top:8px">Ноги: кадр походки = <code>floor(x) % 2</code> — по <b>позиции</b>, а не по времени. Поэтому темп шага сам совпадает со скоростью.</p>
+      </div>
+      <div class="card">
+        <h4>Скорости и потолки <span class="ref">src/console/scene/ScenePresenter.cpp:13</span></h4>
+        <ul class="tight muted" style="font-size:13px">
+          <li><code>kWalkSpeed = 10</code> клеток/сек — базовая скорость</li>
+          <li>× личный темп <code>0.75…1.35</code> (из хэша id)</li>
+          <li>догоняющая скорость: успеть за <code>kCatchUpSec = 0.7</code> с</li>
+          <li>вход с края — не дольше <code>1.2</code> с, уход — ×1.6</li>
+          <li>цель дальше полэкрана → <b>телепорт</b> (снимок важнее красоты)</li>
+        </ul>
+      </div>
+    </div>
+
+    <h3>«Режиссёр»: как снимок превращается в актёров</h3>
+    <p class="lead"><code>ScenePresenter</code> держит свой список актёров (<code>std::map&lt;ClientId, Actor&gt;</code>) и каждый кадр <b>согласует</b> его со снимком — как «reconciliation» в сетевых играх: снимок авторитетен, актёры плавно догоняют. <span class="ref">src/console/scene/ScenePresenter.cpp:146 tick()</span></p>
+    <div class="grid g3">
+      <div class="card"><h4 style="color:var(--green)">id появился</h4><p class="muted" style="font-size:13px;margin:0">Актёра нет в реестре → рождается у правого края и идёт к своему слоту (walk-in).</p></div>
+      <div class="card"><h4 style="color:var(--blue)">цель сменилась</h4><p class="muted" style="font-size:13px;margin:0">Очередь продвинулась → новый твин <b>из текущей точки</b>, без рывка назад (<code>retarget()</code>).</p></div>
+      <div class="card"><h4 style="color:var(--red)">id пропал</h4><p class="muted" style="font-size:13px;margin:0">Ждёт «судьбу» из ленты операций (грейс 2 снимка): ушёл довольным / растерянным / злым.</p></div>
+    </div>
+
+    <div class="callout good" style="margin-top:16px">
+      <b>Вся «мелкая жизнь» очереди — без единого случайного числа.</b> Поза = чистая функция от <code>(id, номер временного окна)</code> через хэш <code>splitmix64</code>. Одна и та же пара всегда даёт одну и ту же позу → кадры воспроизводимы побайтно (тесты не мигают), но у каждого своя фаза → очередь не машет руками синхронно. <span class="ref">src/console/scene/ActorAnim.cpp:22 splitmix64</span>
+    </div>
+    <div class="grid g3">
+      <div class="card"><h4>Переминание</h4><p class="muted" style="font-size:12.5px;margin:0">Stand → ShiftL → Stand → ShiftR, шаг 2.2 с. Взмах рукой ~раз в 40 с (окна по 8 с, шанс 1/5).</p></div>
+      <div class="card"><h4>Болтовня соседей</h4><p class="muted" style="font-size:12.5px;margin:0">Окна 9 с, шанс эпизода 1/3, эпизод 3.5 с, говорящий меняется каждые 1.7 с. Пузырёк · ○ ● 3 кадра/с. <span class="ref">ActorAnim.cpp:55 chatState()</span></p></div>
+      <div class="card"><h4>Нервный клиент</h4><p class="muted" style="font-size:12.5px;margin:0">Терпения &lt; 15% → бейдж «!» и топтание 3 раза/с. Тот же порог красит полосу терпения красным.</p></div>
+    </div>
+  </section>
+
+  <!-- ============ 4. ПОТОКИ ============ -->
+  <section id="s4">
+    <h2 class="title">Потоки и связь с main()</h2>
+    <p class="sub">В live-режиме работают четыре потока. Модель «один писатель — много читателей»: пишет только поток обслуживания, остальные читают копии-снимки через общий мьютекс.</p>
+
+    <div class="lanes">
+      <div class="lane t-eng">
+        <h4 style="color:var(--engine)">Поток прихода</h4>
+        <div class="who">спавнит ScopedEngineThreads</div>
+        <div class="m">generateArrivals()</div>
+        <div class="role">Ждёт экспоненц. интервал, создаёт клиента, под локом пушит в <code>queue_</code>, будит обслуживание.</div>
+      </div>
+      <div class="lane t-eng">
+        <h4 style="color:var(--engine)">Поток обслуживания</h4>
+        <div class="who">единственный писатель</div>
+        <div class="m">run()</div>
+        <div class="m">busyWaitLocked()</div>
+        <div class="role">Берёт клиента, ведёт подход и обслуживание, пишет счёт/кассу/журнал. На «сне» мьютекс отпущен.</div>
+      </div>
+      <div class="lane t-ren">
+        <h4 style="color:var(--render)">Render-поток</h4>
+        <div class="who">создаётся LiveRenderer::start()</div>
+        <div class="m">renderLoop()</div>
+        <div class="m">presenter_->tick()</div>
+        <div class="m">paintFrame()</div>
+        <div class="role">Читает снимки (const), рисует кадры. Владеет <code>differ_</code> и <code>presenter_</code> — только он их трогает.</div>
+      </div>
+      <div class="lane t-con">
+        <h4 style="color:var(--console)">Консольный / main</h4>
+        <div class="who">главный поток программы</div>
+        <div class="m">AdminConsole::run()</div>
+        <div class="m">runLiveSession()</div>
+        <div class="role">Читает команды в raw-режиме, рисует строку ввода под дашбордом, шлёт движку pause/stop.</div>
+      </div>
+    </div>
+
+    <div class="callout info" style="margin-top:16px">
+      <b>Граница «фотографа»:</b> render-поток и консоль читают состояние движка только через <code>snapshot()</code> — короткий <code>lock_guard</code> + копия по значению. А в терминал и рендер, и консоль пишут строго под общим <code>outMutex_</code>, иначе кадр и эхо команды перемешались бы. <span class="ref">include/atmsim/console/LiveRenderer.hpp:135 outMutex_</span>
+    </div>
+
+    <h3>Порядок запуска — от main() до первого кадра</h3>
+    <ol class="seq">
+      <li><code>main()</code> грузит конфиг, ставит обработчики сигналов, входит в цикл прогонов. <span class="ref">src/main.cpp:104</span></li>
+      <li><code>runSingleSimulation()</code> → <code>showSplash()</code> — заставка «самотест банкомата» <b>до</b> старта симуляции. <span class="ref">src/main.cpp:80</span></li>
+      <li><code>ScopedEngineThreads</code> (RAII) спавнит <b>2 потока движка</b>: <code>run()</code> и <code>generateArrivals()</code>. <span class="ref">src/main.cpp:87</span></li>
+      <li><code>AdminConsole::run()</code> проверяет TTY + <code>live_mode</code> → входит в <code>runLiveSession()</code>. <span class="ref">src/console/AdminConsole.cpp:231</span></li>
+      <li>На стеке создаётся <code>LiveRenderer</code>; включается альт-экран; <code>renderer.start()</code> запускает <b>render-поток</b>. <span class="ref">src/console/AdminConsole.cpp:495</span></li>
+      <li><code>renderLoop()</code> крутится: снимки 4×/сек, кадры 15×/сек — пока не придёт <code>stop</code>/<code>restart</code>/<code>live off</code>/Ctrl+C. <span class="ref">src/console/LiveRenderer.cpp:476</span></li>
+      <li>Выход: <code>renderer.stop()</code> (join потока), альт-экран off, <code>threads.stop()</code> — и финальная статистика. <span class="ref">src/main.cpp:98</span></li>
+    </ol>
+  </section>
+
+  <!-- ============ 5. СТРУКТУРЫ ============ -->
+  <section id="s5">
+    <h2 class="title">Структуры данных</h2>
+    <p class="sub">Что физически передаётся между узлами. Снимки — «мёртвые» DTO (без мьютексов). Сцена работает в клетках и твинах. Наведи мышь, читай назначение полей.</p>
+
+    <div class="grid g2">
+      <div class="ds">
+        <h4>AtmSnapshot <span class="tg" style="color:var(--engine);background:rgba(181,140,255,.14)">снимок движка</span></h4>
+        <div class="fields">
+          <div class="f"><span class="fn">state</span><span class="fd">Idle / Serving / Paused / Maintenance / Stopped</span></div>
+          <div class="f"><span class="fn">cashboxBalance</span><span class="fd">баланс кассы + lastCashMove (цвет ±)</span></div>
+          <div class="f"><span class="fn">currentClientId / Operation</span><span class="fd">кого обслуживают и что делают</span></div>
+          <div class="f"><span class="fn">currentStage</span><span class="fd">этап: вставка карты / PIN / отсчёт купюр…</span></div>
+          <div class="f"><span class="fn">serviceProgress</span><span class="fd">доля 0..1 — считается лениво в snapshot()</span></div>
+          <div class="f"><span class="fn">approaching / approachProgress</span><span class="fd">фаза подхода: клиент ещё идёт к терминалу</span></div>
+          <div class="f"><span class="fn">queueLength / totalServed / totalLeft</span><span class="fd">счётчики очереди и итогов</span></div>
+          <div class="f"><span class="fn">lowCash / maintenancePending</span><span class="fd">флаги для подсветки экрана</span></div>
+        </div>
+      </div>
+
+      <div class="ds">
+        <h4>ClientSnapshot <span class="tg" style="color:var(--engine);background:rgba(181,140,255,.14)">снимок движка</span></h4>
+        <div class="fields">
+          <div class="f"><span class="fn">id</span><span class="fd">ключ, по нему презентер узнаёт актёра</span></div>
+          <div class="f"><span class="fn">requestedOperation / amount</span><span class="fd">что хочет клиент</span></div>
+          <div class="f"><span class="fn">waitedSeconds</span><span class="fd">сколько уже ждёт (модельные сек)</span></div>
+          <div class="f"><span class="fn">remainingPatience</span><span class="fd">терпение; &lt;15% → нервный</span></div>
+        </div>
+        <h4 style="border-top:1px solid var(--border)">Tween <span class="tg" style="color:var(--render);background:rgba(62,207,142,.14)">анимация</span></h4>
+        <div class="fields">
+          <div class="f"><span class="fn">fromX / toX</span><span class="fd">откуда и куда едет по X (в клетках)</span></div>
+          <div class="f"><span class="fn">start / dur</span><span class="fd">когда начал и сколько займёт; dur=0 → уже на месте</span></div>
+        </div>
+      </div>
+
+      <div class="ds">
+        <h4>SceneView + SceneActorView <span class="tg" style="color:var(--render);background:rgba(62,207,142,.14)">что рисовать</span></h4>
+        <div class="fields">
+          <div class="f"><span class="fn">actors[]</span><span class="fd">список актёров кадра</span></div>
+          <div class="f"><span class="fn">· x, y, pose, tint</span><span class="fd">позиция, поза (Stand/Walk/Reach…), цвет</span></div>
+          <div class="f"><span class="fn">· label / nervous / chatBubble</span><span class="fd">«#id», бейдж «!», пузырёк речи</span></div>
+          <div class="f"><span class="fn">atm state/stage/progress</span><span class="fd">что показать на экранчике банкомата</span></div>
+          <div class="f"><span class="fn">hiddenQueueCount</span><span class="fd">«… ещё N» — хвост за пределами видимых слотов</span></div>
+          <div class="f"><span class="fn">animPhase</span><span class="fd">fmod(now·8,8) — фаза эффектов (спиннер, купюры)</span></div>
+        </div>
+      </div>
+
+      <div class="ds">
+        <h4>SceneCanvas::Cell <span class="tg" style="color:var(--render);background:rgba(62,207,142,.14)">холст</span></h4>
+        <div class="fields">
+          <div class="f"><span class="fn">glyph (char32_t)</span><span class="fd">один символ; проверен GlyphSet (1 символ = 1 колонка)</span></div>
+          <div class="f"><span class="fn">tint (enum Tint)</span><span class="fd">7 цветов, не сырой ANSI-код</span></div>
+          <div class="f"><span class="fn">bold</span><span class="fd">жирность; ANSI появляется только в toLines()</span></div>
+        </div>
+        <h4 style="border-top:1px solid var(--border)">Actor <span class="tg" style="color:var(--render);background:rgba(62,207,142,.14)">реестр презентера</span></h4>
+        <div class="fields">
+          <div class="f"><span class="fn">state (ActorState)</span><span class="fd">WalkIn/QueueIdle/Advance/AtAtm/Leave…</span></div>
+          <div class="f"><span class="fn">tween / y</span><span class="fd">текущее движение и дорожка (строка)</span></div>
+          <div class="f"><span class="fn">graceTicks</span><span class="fd">грейс на «судьбу» при пропаже из снимка</span></div>
+        </div>
+        <h4 style="border-top:1px solid var(--border)">FrameDiffer <span class="tg" style="color:var(--render);background:rgba(62,207,142,.14)">вывод</span></h4>
+        <div class="fields">
+          <div class="f"><span class="fn">prev_ (vector&lt;string&gt;)</span><span class="fd">прошлый кадр; сравнивается построчно</span></div>
+          <div class="f"><span class="fn">valid_</span><span class="fd">false → следующий diff() вернёт полный кадр</span></div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  </main>
+</div>
+
+<script>
+/* ---------- Навигация ---------- */
+const nav=document.getElementById('nav');
+nav.addEventListener('click',e=>{
+  const a=e.target.closest('a'); if(!a)return;
+  document.querySelectorAll('.nav a').forEach(x=>x.classList.remove('active'));
+  a.classList.add('active');
+  document.querySelectorAll('section').forEach(s=>s.classList.remove('on'));
+  document.getElementById(a.dataset.s).classList.add('on');
+  window.scrollTo(0,0);
+});
+document.getElementById('themeBtn').onclick=()=>{
+  const r=document.documentElement;
+  r.dataset.theme = r.dataset.theme==='light' ? 'dark' : 'light';
+};
+
+/* ---------- 1. Конвейер ---------- */
+const PIPE=[
+ {cls:'eng',lane:'движок',t:'1 · Движок пишет состояние',s:'AtmEngine::run()',
+  role:'Единственный «писатель» симуляции',
+  what:'Поток обслуживания берёт клиента из очереди, ведёт фазу подхода и обслуживания, применяет операцию к счёту и кассе, пишет запись в журнал. Всё под одним мьютексом; на время «сна обслуживания» мьютекс отпущен, поэтому чтение снимков не ждёт.',
+  m:['AtmEngine::run()','busyWaitLocked()','applyOperation()'],
+  d:['std::mutex mutex_','std::atomic<AtmState> state_','queue_, accounts_, cashbox_, log_'],
+  r:['src/engine/AtmEngine.cpp run()','include/atmsim/engine/AtmEngine.hpp:55']},
+ {cls:'eng',lane:'движок',t:'2 · snapshot() — копия под замком',s:'AtmEngine::snapshot()',
+  role:'Делаем «фотографию» состояния',
+  what:'Берёт lock_guard на миллисекунды, копирует поля в структуру и возвращает её ПО ЗНАЧЕНИЮ. Прогресс не хранится готовым — вычисляется тут же из «отработано + (сейчас − старт отрезка)». Рядом queueSnapshot(), statsSnapshot(), operations().',
+  m:['snapshot()','queueSnapshot()','statsSnapshot()','operations()'],
+  d:['AtmSnapshot','ClientSnapshot','StatsSnapshot','OperationRecord'],
+  r:['src/engine/AtmEngine.cpp:643','src/engine/AtmEngine.cpp:659','include/atmsim/engine/Snapshots.hpp:22']},
+ {cls:'ren',lane:'render',t:'3 · Кэш снимков в render-потоке',s:'FullSnapshot full = engine_.fullSnapshot(f)',
+  role:'Опрос движка на refresh_hz (4 Гц)',
+  what:'renderLoop() раз в ¼ секунды делает ОДИН согласованный снимок engine_.fullSnapshot(f) под одним локом и раскладывает full.atm/stats/queue/ops по кэшу. Дальше все кадры до следующего опроса собираются ИЗ ЭТОГО кэша — движок не дёргают чаще, чем меняются данные.',
+  m:['LiveRenderer::renderLoop()'],
+  d:['cachedSnap_','cachedStats_','cachedQueue_','cachedOps_'],
+  r:['src/console/LiveRenderer.cpp:476','include/atmsim/console/LiveRenderer.hpp:163']},
+ {cls:'ren',lane:'render',t:'4 · presenter.tick() — анимация',s:'ScenePresenter::tick(atm, queue, now…)',
+  role:'Актёры догоняют снимок (твины)',
+  what:'Строит цели из снимка (у банкомата, слоты очереди), сравнивает МНОЖЕСТВА со своим реестром: появился → walk-in, цель сменилась → retarget из текущей точки, пропал → уход по «судьбе» из ленты. Продвигает все твины к моменту now. Итог — SceneView.',
+  m:['tick()','retarget()','approachRetarget()','rebuildView()','posAt()'],
+  d:['std::map<ClientId,Actor> actors_','Tween','SceneView view_'],
+  r:['src/console/scene/ScenePresenter.cpp:146','src/console/scene/ScenePresenter.cpp:69']},
+ {cls:'ren',lane:'render',t:'5 · composeScene → канва клеток',s:'scene::composeScene(view, canvas)',
+  role:'Рисуем слои на сетке клеток',
+  what:'Чистая функция: по порядку кладёт слои (кто позже — тот сверху): корпус банкомата, текст экрана, эффекты, человечков поверх, бейджи. text() непрозрачен (затирает), blit() прозрачен по пробелам (фон сохраняется). Художка — из SceneSprites.',
+  m:['composeScene()','SceneCanvas::text()/blit()/put()','SceneSprites::poseRows()'],
+  d:['SceneCanvas (сетка Cell)','SceneView','layout:: константы'],
+  r:['src/console/scene/SceneComposer.cpp:118','src/console/scene/SceneSprites.cpp']},
+ {cls:'ren',lane:'render',t:'6 · toLines() → строки кадра',s:'SceneCanvas::toLines(color)',
+  role:'Клетки → строки с ANSI',
+  what:'Сериализует сетку клеток в vector<string>. ANSI-код цвета вставляется run-length — только на СМЕНЕ цвета/жирности (с reset перед новым). Полный кадр (шапка + сцена + 2 колонки + подвал) собирает composeLinesFrom().',
+  m:['toLines()','LiveRenderer::composeLinesFrom()','fit()'],
+  d:['std::vector<std::string> (кадр)'],
+  r:['src/console/scene/SceneCanvas.cpp:68','src/console/LiveRenderer.cpp:140']},
+ {cls:'ren',lane:'render',t:'7 · FrameDiffer.diff()',s:'differ_.diff(lines)',
+  role:'Только изменившиеся строки',
+  what:'Сравнивает новый кадр с прошлым построчно. Отдаёт «перейти на строку N + строка + стереть до конца» только для изменившихся. Пустой результат = кадр не изменился, терминал не трогается. Так убирается мерцание и стоимость кадра падает с ~45 мс до ~1 мс.',
+  m:['diff()','invalidate()'],
+  d:['prev_ (vector<string>)','valid_'],
+  r:['src/console/FrameDiffer.cpp:7','include/atmsim/console/FrameDiffer.hpp']},
+ {cls:'ren',lane:'render',t:'8 · paintFrame() → терминал',s:'std::cout << out << std::flush',
+  role:'Один атомарный вывод кадра',
+  what:'Оборачивает дифф: синхро-маркеры (кадр показывается атомарно), прячет курсор, в конце явно ставит курсор в строку ввода. Под общим outMutex_ повторно проверяет паузу и делает ОДНУ запись в stdout.',
+  m:['paintFrame()','ansi::syncBegin/hideCursor/moveTo'],
+  d:['outMutex_','cursorRow_/cursorCol_ (atomic)'],
+  r:['src/console/LiveRenderer.cpp:439','include/atmsim/console/Terminal.hpp:111']},
+];
+const pipe=document.getElementById('pipe'), pdetail=document.getElementById('pdetail');
+PIPE.forEach((n,i)=>{
+  if(i>0){const c=document.createElement('div');c.className='pconn';pipe.appendChild(c);}
+  const el=document.createElement('div');
+  el.className='pnode '+n.cls;
+  el.innerHTML=`<span class="plane-tag ${n.cls}">${n.lane}</span><div class="pt">${n.t}</div><div class="ps">${n.s}</div>`;
+  el.onclick=()=>{document.querySelectorAll('.pnode').forEach(x=>x.classList.remove('sel'));el.classList.add('sel');showDetail(n);};
+  pipe.appendChild(el);
+});
+function showDetail(n){
+  pdetail.innerHTML=`<h4>${n.t.replace(/^\d+\s·\s/,'')}</h4>
+    <div class="role">${n.role}</div>
+    <div class="what">${n.what}</div>
+    <span class="k">Методы</span>${n.m.map(x=>`<span class="chip">${x}</span>`).join('')}
+    <span class="k">Структуры данных</span>${n.d.map(x=>`<span class="chip">${x.replace(/</g,'&lt;').replace(/>/g,'&gt;')}</span>`).join('')}
+    <span class="k">В коде</span>${n.r.map(x=>`<span class="ref">${x}</span>`).join('')}`;
+}
+document.querySelector('.pnode').classList.add('sel');showDetail(PIPE[0]);
+
+/* ---------- Утилиты рисования ---------- */
+function css(v){return getComputedStyle(document.documentElement).getPropertyValue(v).trim();}
+function fitCanvas(cv){const r=cv.getBoundingClientRect();const dpr=window.devicePixelRatio||1;cv.width=r.width*dpr;cv.height=cv.height*dpr;const ctx=cv.getContext('2d');ctx.setTransform(dpr,0,0,dpr,0,0);return {ctx,w:r.width,h:cv.height/dpr};}
+
+/* ---------- 2. Таймлайн двух ритмов ---------- */
+(function(){
+  const cv=document.getElementById('cvTiming');
+  let playing=true, speed=1, t=0, last=0, ns=0, nf=0;
+  const SNAP=0.25, FRAME=1/15, WIN=3; // окно 3 сек
+  const btn=document.getElementById('timPlay');
+  btn.onclick=()=>{playing=!playing;btn.textContent=playing?'⏸ Пауза':'▶ Играть';btn.classList.toggle('on',playing);};
+  document.getElementById('timSpeed').oninput=e=>{speed=+e.target.value;document.getElementById('timSpeedV').textContent=speed.toFixed(1)+'×';};
+  const cSnap=document.getElementById('timSnap'), cFrame=document.getElementById('timFrame');
+  function draw(now){
+    if(!last)last=now; const dt=(now-last)/1000; last=now;
+    if(playing)t+=dt*speed;
+    const {ctx,w,h}=fitCanvas(cv);
+    ctx.clearRect(0,0,w,h);
+    const padL=90,padR=20,axW=w-padL-padR;
+    const t0=Math.max(0,t-WIN);
+    const X=v=>padL+((v-t0)/WIN)*axW;
+    // оси
+    const yF=h*0.72, yS=h*0.34;
+    ctx.strokeStyle=css('--border');ctx.lineWidth=1;
+    ctx.beginPath();ctx.moveTo(padL,yS);ctx.lineTo(w-padR,yS);ctx.moveTo(padL,yF);ctx.lineTo(w-padR,yF);ctx.stroke();
+    ctx.font='12px '+css('--sans');ctx.textAlign='right';ctx.textBaseline='middle';
+    ctx.fillStyle=css('--engine');ctx.fillText('снимок 4 Гц',padL-10,yS);
+    ctx.fillStyle=css('--render');ctx.fillText('кадр 15 fps',padL-10,yF);
+    // снимки
+    if(cSnap.checked){
+      ctx.fillStyle=css('--engine');
+      const first=Math.ceil(t0/SNAP);
+      for(let k=first;k*SNAP<=t;k++){const x=X(k*SNAP);if(x<padL)continue;ctx.beginPath();ctx.arc(x,yS,6,0,7);ctx.fill();
+        // луч связи «этот снимок кормит кадры»
+        ctx.strokeStyle='rgba(181,140,255,.25)';ctx.beginPath();ctx.moveTo(x,yS+6);ctx.lineTo(x,yF);ctx.stroke();}
+    }
+    // кадры
+    if(cFrame.checked){
+      ctx.strokeStyle=css('--render');ctx.lineWidth=2;
+      const first=Math.ceil(t0/FRAME);
+      for(let k=first;k*FRAME<=t;k++){const x=X(k*FRAME);if(x<padL)continue;ctx.beginPath();ctx.moveTo(x,yF-9);ctx.lineTo(x,yF+9);ctx.stroke();}
+    }
+    // playhead
+    ctx.strokeStyle=css('--accent');ctx.lineWidth=1.5;ctx.setLineDash([4,4]);
+    ctx.beginPath();ctx.moveTo(X(t),20);ctx.lineTo(X(t),h-14);ctx.stroke();ctx.setLineDash([]);
+    ctx.fillStyle=css('--fg3');ctx.textAlign='center';ctx.fillText('время →',w-padR-30,h-6);
+    ns=Math.floor(t/SNAP);nf=Math.floor(t/FRAME);
+    document.getElementById('timNS').textContent=ns;
+    document.getElementById('timNF').textContent=nf;
+    requestAnimationFrame(draw);
+  }
+  requestAnimationFrame(draw);
+})();
+
+/* ---------- 3. Демо твина ---------- */
+(function(){
+  const cv=document.getElementById('cvTween');
+  const CELLS=44, CELLPX=()=>{const r=cv.getBoundingClientRect();return (r.width-20)/CELLS;};
+  const kWalk=10,kCatch=0.7;
+  let clock=0,last=0,playing=true,auto=true,pace=1.0;
+  let x=8, tween={from:8,to:8,start:0,dur:0}, idleUntil=0, ends=[6,36], ei=0;
+  function smooth(u){u=Math.max(0,Math.min(1,u));return u*u*(3-2*u);}
+  function posAt(){if(tween.dur<=0)return tween.to;const u=(clock-tween.start)/tween.dur;return tween.from+(tween.to-tween.from)*smooth(u);}
+  function retarget(target){const cur=posAt();const dist=Math.abs(target-cur);
+    if(dist<0.5){tween={from:target,to:target,start:clock,dur:0};return;}
+    const sp=Math.max(kWalk*pace,dist/kCatch);tween={from:cur,to:target,start:clock,dur:dist/sp};}
+  const btn=document.getElementById('twPlay');
+  btn.onclick=()=>{playing=!playing;btn.textContent=playing?'⏸ Пауза':'▶ Играть';btn.classList.toggle('on',playing);};
+  document.getElementById('twAuto').onchange=e=>auto=e.target.checked;
+  document.getElementById('twPace').oninput=e=>{pace=+e.target.value;document.getElementById('twPaceV').textContent=pace.toFixed(2)+'×';};
+  cv.addEventListener('click',e=>{const r=cv.getBoundingClientRect();const cell=Math.round((e.clientX-r.left-10)/CELLPX());retarget(Math.max(5,Math.min(CELLS-3,cell)));auto=false;document.getElementById('twAuto').checked=false;});
+
+  const SPR={
+    stand:[' o ','/|\\','/ \\'],
+    walkA:[' o ','/|\\','/ \\'],
+    walkB:[' o ','/|\\',' | '],
+  };
+  function draw(now){
+    if(!last)last=now;const dt=(now-last)/1000;last=now;
+    if(playing)clock+=dt;
+    x=posAt();
+    const moving = clock < tween.start+tween.dur - 1e-4;
+    if(!moving && auto){ if(!idleUntil)idleUntil=clock+0.5; if(clock>=idleUntil){ei^=1;retarget(ends[ei]);idleUntil=0;} }
+    const {ctx,w,h}=fitCanvas(cv);
+    ctx.clearRect(0,0,w,h);
+    const cpx=CELLPX(), baseY=h*0.42, groundY=h*0.78;
+    // земля
+    ctx.strokeStyle=css('--border');ctx.beginPath();ctx.moveTo(10,groundY+4);ctx.lineTo(w-10,groundY+4);ctx.stroke();
+    // разметка клеток
+    ctx.fillStyle=css('--fg3');ctx.font='10px '+css('--mono');ctx.textAlign='center';
+    for(let c=0;c<=CELLS;c+=6){const px=10+c*cpx;ctx.fillText(c,px,groundY+18);}
+    // банкомат (ASCII слева) в клетках 1..4
+    ctx.font=Math.max(10,cpx*1.1)+'px '+css('--mono');ctx.textBaseline='top';ctx.textAlign='left';
+    ctx.fillStyle=css('--grey');
+    ['┌──┐','│$$│','└──┘'].forEach((r,i)=>ctx.fillText(r,10+1*cpx,baseY+i*(cpx*1.15)));
+    // цель (маркер)
+    const tgx=10+tween.to*cpx;
+    ctx.strokeStyle=css('--accent');ctx.setLineDash([3,3]);ctx.beginPath();ctx.moveTo(tgx,baseY-8);ctx.lineTo(tgx,groundY);ctx.stroke();ctx.setLineDash([]);
+    ctx.fillStyle=css('--accent');ctx.textAlign='center';ctx.font='10px '+css('--sans');ctx.fillText('цель',tgx,baseY-20);
+    // человечек
+    let spr=SPR.stand;
+    if(moving){spr = (Math.floor(x)%2===0)?SPR.walkA:SPR.walkB;}
+    ctx.fillStyle=moving?css('--cyan'):css('--fg');
+    ctx.font=Math.max(11,cpx*1.15)+'px '+css('--mono');ctx.textAlign='left';ctx.textBaseline='top';
+    const fx=10+x*cpx;
+    spr.forEach((r,i)=>ctx.fillText(r,fx,baseY+i*(cpx*1.15)));
+    // HUD
+    const u=tween.dur<=0?1:Math.max(0,Math.min(1,(clock-tween.start)/tween.dur));
+    document.getElementById('twFromTo').textContent=tween.from.toFixed(0)+' → '+tween.to.toFixed(0);
+    document.getElementById('twU').textContent=u.toFixed(2);
+    document.getElementById('twS').textContent=smooth(u).toFixed(2);
+    document.getElementById('twX').textContent=x.toFixed(1);
+    document.getElementById('twState').textContent=moving?'идёт':'стоит';
+    document.getElementById('twLeg').textContent=moving?((Math.floor(x)%2===0)?'A (врозь)':'B (вместе)'):'—';
+    requestAnimationFrame(draw);
+  }
+  requestAnimationFrame(draw);
+})();
+</script>
+</body>
+</html>

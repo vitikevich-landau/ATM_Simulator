@@ -21,7 +21,14 @@
 | **M4** | Журнал операций + отчёты: `client`/`balance`/`operations`/`atm`/`stats`, `CommandParser`, `export` в CSV | ✅ |
 | **M5** | Режим техобслуживания: `maintenance start/stop`, логика «уйти/остаться» (§4.5), авто-завершение | ✅ |
 | **M6** | Живой дашборд (Live-режим, §4.8): render-поток, ANSI+цвет, деградация вне TTY, `TerminalBackend` | ✅ |
-| **M7** | Технический лог в файл, SIGINT/SIGTERM, итоговая статистика, санитайзеры ASan/UBSan | ✅ готово |
+| **M7** | Технический лог в файл, SIGINT/SIGTERM, итоговая статистика, санитайзеры ASan/UBSan | ✅ |
+| **M8** | Этап обслуживания на дашборде: тематические стадии (карта → PIN → … → возврат карты) и прогресс в % (`ServiceStages`); в `status` — строка «Сейчас» | ✅ |
+| **M9** | Анимированная сцена (v1): банкомат и очередь ASCII-человечков над таблицей, `ScenePresenter`/`SceneComposer`/`SceneCanvas`, дифф-рендер `FrameDiffer`, команда `scene on\|off` | ✅ |
+| **M10** | Сцена v2: фаза подхода к банкомату (`clients.walk_seconds`) в движке, личный темп ходьбы, болтовня соседей по очереди, сплеш-«самотест» при старте | ✅ |
+| **M11** | Оптимизации производительности: единый `fullSnapshot()` под одним локом, кэш кадра, разделение частот снимок/кадр (`perf/part1`, влито в main) | ✅ |
+
+> Этапы M0–M7 — из дорожной карты ТЗ; M8–M11 — надстройки над §4.8, реализованные
+> сверх исходного объёма (документированы отдельно в [docs/](docs/)).
 
 ---
 
@@ -59,6 +66,16 @@ build\Debug\atm_sim.exe    # Windows (MSVC)
 обратно. Если stdout перенаправлен в файл/пайп, live-режим автоматически
 отключается (командный режим, без ANSI).
 
+При достаточно большом терминале (от ~84×30; рекомендуется 120×40) над таблицей
+включается **анимированная сцена**: банкомат с экраном, обслуживаемый клиент и
+очередь ASCII-человечков — они подходят, ждут, переминаются, уходят по терпению.
+Сцена — только косметика поверх тех же снимков движка (рендер по-прежнему лишь
+читает), детерминированная при фиксированном seed. Управляется командой
+`scene on|off` (без аргумента — переключить) и ключами конфига `ui.scene` /
+`scene_fps` / `scene_rows` / `scene_effects`; на узком окне дашборд молча остаётся
+в табличном режиме. Подробности и инварианты — в
+[docs/scene_architecture.md](docs/scene_architecture.md).
+
 Чтобы увидеть дашборд, собрав бинарь в контейнере, запустите его с флагом `-it`
 (псевдотерминал — тогда live-режим включается):
 
@@ -84,11 +101,12 @@ docker run --rm --security-opt seccomp=unconfined -v "$PWD":/work -w /work \
   php:8.3-cli sh scripts/tsan_docker.sh
 ```
 
-> **Примечание по зависимостям.** По ТЗ конфигурация читается через
-> `nlohmann/json`, а тесты — на GoogleTest/Catch2. Пока окружение разработки без
-> доступа к сети, на первых этапах используется минимальный собственный
-> тест-харнес (`tests/`), а внешние библиотеки подключаются через FetchContent,
-> как только появится сеть. На результат симуляции это не влияет.
+> **Примечание по зависимостям.** `nlohmann/json` вендорен как single-header в
+> `third_party/nlohmann/json.hpp` и подключается INTERFACE-целью (SYSTEM-путь) —
+> ни сеть, ни FetchContent для чтения конфигурации не нужны. Тесты идут на
+> минимальном собственном тест-харнесе (`tests/simple_test.hpp`), а не на
+> GoogleTest/Catch2; переход на внешний фреймворк остаётся возможным шагом, если
+> понадобится. На результат симуляции ничего из этого не влияет.
 
 ---
 
@@ -97,7 +115,7 @@ docker run --rm --security-opt seccomp=unconfined -v "$PWD":/work -w /work \
 Все прогоны — в контейнере с GCC 14 (см. `scripts/`):
 
 ```bash
-# сборка + 86 юнит/сценарных тестов
+# сборка + 154 юнит/сценарных теста
 docker run --rm -v "$PWD":/work -w /work php:8.3-cli sh scripts/build_docker.sh
 
 # ThreadSanitizer — гонки данных в многопоточном ядре (§11, §14)
@@ -107,6 +125,10 @@ docker run --rm --security-opt seccomp=unconfined -v "$PWD":/work -w /work \
 # Address + UB санитайзеры — порча памяти, утечки, неопределённое поведение
 docker run --rm --security-opt seccomp=unconfined -v "$PWD":/work -w /work \
   php:8.3-cli sh scripts/asan_docker.sh
+
+# Valgrind memcheck — независимая перекрёстная проверка памяти (без санитайзеров)
+docker run --rm --security-opt seccomp=unconfined -v "$PWD":/work -w /work \
+  php:8.3-cli sh scripts/valgrind_docker.sh
 ```
 
 Ключевые гарантии (проверены тестами): инвариант сохранения денег держится под
@@ -126,11 +148,24 @@ atm-simulator/
 ├── CMakeLists.txt          # корневой скрипт сборки
 ├── config/
 │   └── default_config.json # параметры симуляции (см. §9 ТЗ)
-├── include/atmsim/         # публичные заголовки (core/ engine/ console/ …)
+├── include/atmsim/         # публичные заголовки (core/ engine/ console/ console/scene/ config/ reporting/ utils/)
 ├── src/                    # реализация, зеркалирует include/
-├── tests/                  # юнит- и сценарные тесты (с M1)
+├── tests/                  # юнит- и сценарные тесты (154 теста, с M1)
+├── docs/                   # документация и схемы (архитектура, рендеринг, сцена, study-guide)
+├── scripts/                # Docker-обёртки: сборка + санитайзеры ASan/TSan + Valgrind
+├── tools/                  # term_bench.cpp — бенчмарк бюджета кадра терминала
+├── third_party/            # вендоренные зависимости (nlohmann/json — single-header)
 └── ATM_Simulator_TZ.md     # техническое задание
 ```
+
+## Документация
+
+- [ATM_Simulator_TZ.md](ATM_Simulator_TZ.md) — полное техническое задание (спецификация).
+- [docs/atm_architecture.html](docs/atm_architecture.html) — карта архитектуры: модули, потоки, поток данных.
+- [docs/rendering-scheme.html](docs/rendering-scheme.html) — схема конвейера рендеринга Live-дашборда.
+- [docs/scene_architecture.md](docs/scene_architecture.md) — устройство анимированной сцены (слои, инварианты, reconciliation).
+- [docs/scene_frame_budget.md](docs/scene_frame_budget.md) — измерения бюджета кадра терминала (этап 0 сцены).
+- [docs/study-guide.html](docs/study-guide.html) — учебная карта проекта для навигации по коду.
 
 ## Соглашения
 
